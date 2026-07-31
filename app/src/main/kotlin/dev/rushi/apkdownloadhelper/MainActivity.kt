@@ -94,6 +94,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
@@ -178,6 +179,17 @@ class MainActivity : ComponentActivity() {
         if (request != null) loadCandidates()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        request = HelperRequest.from(intent)
+        if (request != null) {
+            loadCandidates()
+        } else {
+            uiState = UiState.Idle
+        }
+    }
+
     private fun loadCandidates() {
         val activeRequest = request ?: return
         uiState = UiState.Loading
@@ -197,6 +209,9 @@ class MainActivity : ComponentActivity() {
                     addAll(runCatching { findAptoide(activeRequest) }
                         .onFailure { Log.w(TAG, "Aptoide lookup failed", it) }
                         .getOrDefault(emptyList()))
+                    addAll(runCatching { findUptodown(activeRequest) }
+                        .onFailure { Log.w(TAG, "Uptodown lookup failed", it) }
+                        .getOrDefault(emptyList()))
                 }.distinctBy { "${it.source}:${it.packageName}:${it.versionName}:${it.versionCode}:${it.url}" }
 
                 val requestedCandidates = buildList {
@@ -207,9 +222,6 @@ class MainActivity : ComponentActivity() {
                 val latestCandidates = buildList {
                     add(apkMirrorLatest(activeRequest))
                     addAll(candidates.filter { it.option == CandidateOption.LATEST })
-                    addAll(runCatching { findUptodown(activeRequest) }
-                        .onFailure { Log.w(TAG, "Uptodown lookup failed", it) }
-                        .getOrDefault(emptyList()))
                     add(playStoreCandidate(activeRequest))
                     addAll(latestWebFallbacks(activeRequest, this))
                 }.sortedBy { it.sortIndex }
@@ -707,9 +719,17 @@ class MainActivity : ComponentActivity() {
     private fun findUptodown(request: HelperRequest): List<DownloadCandidate> {
         return uptodownDetailUrls(request)
             .firstNotNullOfOrNull { detailUrl ->
-                runCatching { uptodownCandidateFromDetailUrl(request, detailUrl) }.getOrNull()
+                val latest = runCatching { uptodownCandidateFromDetailUrl(request, detailUrl) }
+                    .onFailure { Log.w(TAG, "Uptodown latest resolve failed", it) }
+                    .getOrNull()
+                val requested = runCatching { uptodownRequestedCandidateFromDetailUrl(request, detailUrl) }
+                    .onFailure { Log.w(TAG, "Uptodown requested version resolve failed", it) }
+                    .getOrNull()
+
+                listOfNotNull(latest, requested)
+                    .distinctBy(DownloadCandidate::identityKey)
+                    .takeIf { it.isNotEmpty() }
             }
-            ?.let(::listOf)
             .orEmpty()
     }
 
@@ -754,10 +774,9 @@ class MainActivity : ComponentActivity() {
         request: HelperRequest,
         detailUrl: String
     ): DownloadCandidate? {
-        val downloadPageUrl = "$detailUrl/download"
+        val downloadPageUrl = "${detailUrl.trimEnd('/')}/download"
         val doc = fetchDocument(downloadPageUrl)
-        val packageName = doc.selectFirst("#gplay-url")?.attr("data-url")?.substringAfter("id=")
-            ?: parseInfoTableValue(doc, "Package Name")
+        val packageName = uptodownPackageName(doc)
 
         if (packageName != request.packageName) return null
 
@@ -769,6 +788,7 @@ class MainActivity : ComponentActivity() {
         val fileKind = parseInfoTableValue(doc, "File type")?.lowercase(Locale.US) ?: "apk"
         val externalUrl = doc.selectFirst("#detail-download-button[data-url-ext]")?.attr("data-url-ext")
             ?.normalizedHttpUrlOrNull()
+            ?: uptodownDownloadUrlFromPage(doc)
 
         return DownloadCandidate(
             source = DownloadSource.UPTODOWN,
@@ -796,6 +816,238 @@ class MainActivity : ComponentActivity() {
                 }
                 .orEmpty()
         )
+    }
+
+    private fun uptodownRequestedCandidateFromDetailUrl(
+        request: HelperRequest,
+        detailUrl: String
+    ): DownloadCandidate? {
+        if (request.versionName == null && request.compatibleVersionNames.isEmpty()) return null
+
+        val normalizedDetailUrl = detailUrl.trimEnd('/')
+        val downloadPageUrl = "$normalizedDetailUrl/download"
+        val downloadDoc = fetchDocument(downloadPageUrl)
+        if (uptodownPackageName(downloadDoc) != request.packageName) return null
+
+        val versionsDoc = fetchDocument("$normalizedDetailUrl/versions", referer = downloadPageUrl)
+        val dataCode = uptodownDataCode(versionsDoc)
+            ?: uptodownDataCode(downloadDoc)
+            ?: return null
+        val entry = uptodownRequestedVersionEntry(
+            request = request,
+            detailUrl = normalizedDetailUrl,
+            dataCode = dataCode
+        ) ?: return null
+
+        return uptodownCandidateFromVersionEntry(
+            request = request,
+            detailUrl = normalizedDetailUrl,
+            dataCode = dataCode,
+            entry = entry
+        )
+    }
+
+    private fun uptodownRequestedVersionEntry(
+        request: HelperRequest,
+        detailUrl: String,
+        dataCode: String
+    ): UptodownVersionEntry? {
+        for (page in 1..20) {
+            val entries = runCatching {
+                gson.fromJson(
+                    fetchText("$detailUrl/apps/$dataCode/versions/$page", referer = "$detailUrl/versions"),
+                    UptodownVersionResponse::class.java
+                ).data
+            }.getOrDefault(emptyList())
+
+            if (entries.isEmpty()) break
+
+            entries
+                .firstOrNull { entry ->
+                    val versionName = entry.version?.trim()?.takeIf(String::isNotBlank)
+                    versionName != null && (
+                        request.matchesRequestedVersion(versionName, null) ||
+                            versionName in request.compatibleVersionNames
+                        )
+                }
+                ?.let { return it }
+        }
+
+        return null
+    }
+
+    private fun uptodownCandidateFromVersionEntry(
+        request: HelperRequest,
+        detailUrl: String,
+        dataCode: String,
+        entry: UptodownVersionEntry
+    ): DownloadCandidate? {
+        val versionName = entry.version?.trim()?.takeIf(String::isNotBlank) ?: return null
+        val versionPageUrl = uptodownVersionPageUrl(entry) ?: return null
+        val pageDoc = fetchDocument(versionPageUrl, referer = "$detailUrl/versions")
+        val variant = uptodownPreferredVariant(
+            request = request,
+            detailUrl = detailUrl,
+            dataCode = dataCode,
+            pageDoc = pageDoc,
+            versionPageUrl = versionPageUrl
+        )
+        val tokenDoc = variant
+            ?.let { fetchDocument("$detailUrl/download/${it.fileId}-x", referer = versionPageUrl) }
+            ?: pageDoc
+        val fileKind = (
+            variant?.fileKind
+                ?: entry.kindFile
+                ?: entry.titleKindFile
+                ?: parseInfoTableValue(tokenDoc, "File type")
+                ?: "apk"
+            )
+            .lowercase(Locale.US)
+        val directUrl = uptodownDownloadUrlFromPage(tokenDoc)
+
+        return DownloadCandidate(
+            source = DownloadSource.UPTODOWN,
+            name = request.appName,
+            packageName = request.packageName,
+            versionName = versionName,
+            versionCode = null,
+            url = directUrl ?: versionPageUrl,
+            fileKind = fileKind,
+            option = CandidateOption.REQUESTED,
+            directDownload = directUrl != null,
+            versionStatus = request.versionStatus(versionName, null),
+            formatMatches = request.acceptsFormat(fileKind),
+            files = directUrl
+                ?.let {
+                    listOf(
+                        CandidateDownloadFile(
+                            url = it,
+                            fileName = "${request.packageName}-$versionName-uptodown.$fileKind"
+                                .sanitizeFileName(),
+                            referer = versionPageUrl
+                        )
+                    )
+                }
+                .orEmpty()
+        )
+    }
+
+    private fun uptodownPreferredVariant(
+        request: HelperRequest,
+        detailUrl: String,
+        dataCode: String,
+        pageDoc: Document,
+        versionPageUrl: String
+    ): UptodownVariantFile? {
+        val dataVersion = pageDoc.selectFirst(".button.variants[data-version]")
+            ?.attr("data-version")
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        val appHostUrl = detailUrl.substringBeforeLast("/")
+        val content = runCatching {
+            gson.fromJson(
+                fetchText("$appHostUrl/app/$dataCode/version/$dataVersion/files", referer = versionPageUrl),
+                UptodownVariantResponse::class.java
+            ).content
+        }.getOrNull()
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        val variants = uptodownVariantFiles(Jsoup.parse(content, detailUrl))
+        val archMatches = variants.filter { variant -> uptodownArchMatches(variant.archLabel, request) }
+
+        return archMatches.firstOrNull { request.acceptsFormat(it.fileKind) }
+            ?: archMatches.firstOrNull()
+            ?: variants.firstOrNull { request.acceptsFormat(it.fileKind) }
+            ?: variants.firstOrNull()
+    }
+
+    private fun uptodownVariantFiles(doc: Document): List<UptodownVariantFile> {
+        val content = doc.selectFirst(".content") ?: return emptyList()
+        var archLabel: String? = null
+        return content.children().mapNotNull { child ->
+            if (!child.hasClass("variant")) {
+                archLabel = child.text().trim().takeIf(String::isNotBlank)
+                null
+            } else {
+                uptodownVariantFile(child, archLabel)
+            }
+        }
+    }
+
+    private fun uptodownVariantFile(element: Element, archLabel: String?): UptodownVariantFile? {
+        val fileId = element.selectFirst(".v-report[data-file-id]")
+            ?.attr("data-file-id")
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        val fileKind = element.selectFirst(".v-file span")
+            ?.text()
+            ?.lowercase(Locale.US)
+            ?.takeIf(String::isNotBlank)
+            ?: "apk"
+
+        return UptodownVariantFile(
+            fileId = fileId,
+            fileKind = fileKind,
+            archLabel = archLabel
+        )
+    }
+
+    private fun uptodownArchMatches(archLabel: String?, request: HelperRequest): Boolean {
+        val normalizedLabel = archLabel
+            ?.lowercase(Locale.US)
+            ?.takeIf(String::isNotBlank)
+            ?: return true
+        if ("all architectures" in normalizedLabel || "universal" in normalizedLabel) return true
+
+        val supportedAbis = request.supportedAbis.ifEmpty { Build.SUPPORTED_ABIS.toList() }
+            .map { it.lowercase(Locale.US) }
+        if (supportedAbis.isEmpty()) return true
+
+        return supportedAbis.any { abi ->
+            normalizedLabel.contains(abi) ||
+                (abi == "armeabi-v7a" && normalizedLabel.contains("arm-v7a"))
+        }
+    }
+
+    private fun uptodownPackageName(doc: Document): String? {
+        val playUrl = doc.selectFirst("#gplay-url[data-url]")
+            ?.attr("data-url")
+            ?.takeIf(String::isNotBlank)
+        val playPackage = playUrl
+            ?.let { runCatching { Uri.parse(it).getQueryParameter("id") }.getOrNull() }
+            ?.takeIf(String::isNotBlank)
+            ?: playUrl
+                ?.substringAfter("id=", "")
+                ?.substringBefore("&")
+                ?.takeIf(String::isNotBlank)
+
+        return playPackage ?: parseInfoTableValue(doc, "Package Name")
+    }
+
+    private fun uptodownDataCode(doc: Document): String? =
+        doc.selectFirst("#detail-app-name[data-code]")
+            ?.attr("data-code")
+            ?.takeIf(String::isNotBlank)
+
+    private fun uptodownVersionPageUrl(entry: UptodownVersionEntry): String? {
+        val versionUrl = entry.versionUrl ?: return null
+        val baseUrl = versionUrl.url?.trim()?.trimEnd('/')?.takeIf(String::isNotBlank) ?: return null
+        val extraUrl = versionUrl.extraUrl?.trim('/')?.takeIf(String::isNotBlank) ?: "download"
+        val versionId = versionUrl.versionId ?: entry.fileId ?: return null
+        return "$baseUrl/$extraUrl/$versionId"
+    }
+
+    private fun uptodownDownloadUrlFromPage(doc: Document): String? {
+        val dataUrl = doc.selectFirst("#detail-download-button[data-url]")
+            ?.attr("data-url")
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        val normalized = dataUrl.trim()
+        return if (normalized.startsWith("http", ignoreCase = true)) {
+            normalized.normalizedHttpUrlOrNull()
+        } else {
+            "https://dw.uptodown.com/dwn/${normalized.trimStart('/')}".normalizedHttpUrlOrNull()
+        }
     }
 
     private suspend fun findApkPure(request: HelperRequest): List<DownloadCandidate> {
@@ -2062,6 +2314,40 @@ private data class SourceCandidateGroup(
 private data class ApkMirrorLatestInfo(
     val versionName: String?,
     val openUrl: String
+)
+
+private data class UptodownVersionResponse(
+    val data: List<UptodownVersionEntry> = emptyList()
+)
+
+private data class UptodownVersionEntry(
+    @SerializedName("fileID")
+    val fileId: Long? = null,
+    val version: String? = null,
+    @SerializedName("kindFile")
+    val kindFile: String? = null,
+    @SerializedName("titleKindFile")
+    val titleKindFile: String? = null,
+    @SerializedName("versionURL")
+    val versionUrl: UptodownVersionUrl? = null
+)
+
+private data class UptodownVersionUrl(
+    val url: String? = null,
+    @SerializedName("extraURL")
+    val extraUrl: String? = null,
+    @SerializedName("versionID")
+    val versionId: Long? = null
+)
+
+private data class UptodownVariantResponse(
+    val content: String? = null
+)
+
+private data class UptodownVariantFile(
+    val fileId: String,
+    val fileKind: String,
+    val archLabel: String?
 )
 
 private data class DownloadCandidate(
