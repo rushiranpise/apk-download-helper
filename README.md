@@ -132,6 +132,10 @@ APK hosting and indexing costs money. If this helper saves you time, consider su
 - [Aptoide Premium](https://en.aptoide.com/premium)
 - [Aurora Store donations](https://gitlab.com/AuroraOSS/AuroraStore/#donations)
 
+## License
+
+APK Download Helper is licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE).
+
 ## Notes
 
 - Only download apps you are allowed to access.
