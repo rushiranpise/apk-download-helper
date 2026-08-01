@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.OpenInBrowser
@@ -53,6 +54,7 @@ import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -86,6 +88,8 @@ import java.io.SequenceInputStream
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -163,19 +167,24 @@ class MainActivity : ComponentActivity() {
 
     private var request by mutableStateOf<HelperRequest?>(null)
     private var uiState by mutableStateOf<UiState>(UiState.Idle)
+    private val requestLogs = mutableStateListOf<RequestLogEntry>()
+    private val logTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         request = HelperRequest.from(intent)
+        startRequestLog(request)
 
         setContent {
             HelperTheme {
                 HelperScreen(
                     request = request,
                     state = uiState,
+                    logs = requestLogs,
                     onRefresh = ::loadCandidates,
                     onResolve = ::resolveCandidates,
                     onDownload = ::downloadAndReturn,
+                    onClearLogs = { requestLogs.clear() },
                     onCancel = {
                         setResult(Activity.RESULT_CANCELED)
                         finish()
@@ -191,6 +200,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         request = HelperRequest.from(intent)
+        startRequestLog(request)
         if (request != null) {
             loadCandidates()
         } else {
@@ -201,15 +211,18 @@ class MainActivity : ComponentActivity() {
     private fun loadCandidates() {
         val activeRequest = request ?: return
         uiState = UiState.Ready(initialCandidateResult(activeRequest))
+        appendLog("Ready. Manual links prepared for ${DownloadSource.entries.size} sources.")
     }
 
     private fun resolveCandidates(source: DownloadSource, option: CandidateOption) {
         val activeRequest = request ?: return
+        appendLog("Checking ${option.labelForLogs} from ${source.label}.")
         updateResolveState(source, option, ResolveState.Loading)
         lifecycleScope.launch {
             val resolved = withContext(Dispatchers.IO) {
                 resolveSourceSection(activeRequest, source, option)
             }
+            logResolveOutcome(source, option, resolved)
 
             updateResolveState(
                 source = source,
@@ -230,6 +243,48 @@ class MainActivity : ComponentActivity() {
         val activeRequest = request ?: return
         val current = (uiState as? UiState.Ready)?.result ?: initialCandidateResult(activeRequest)
         uiState = UiState.Ready(current.withResolveState(source, option, state))
+    }
+
+    private fun startRequestLog(request: HelperRequest?) {
+        requestLogs.clear()
+        if (request == null) {
+            appendLog("Opened without a Morphe request.", LogLevel.Warning)
+        } else {
+            appendLog(
+                "Request for ${request.appName} (${request.packageName}), " +
+                    "version ${request.versionName ?: "any compatible"}, " +
+                    "build ${request.versionCodeSummary ?: "any"}, format ${request.requestedFormatLabel}."
+            )
+        }
+    }
+
+    private fun logResolveOutcome(
+        source: DownloadSource,
+        option: CandidateOption,
+        outcome: ResolveOutcome
+    ) {
+        when {
+            outcome.errorMessage != null && outcome.candidates.isEmpty() -> {
+                appendLog("${source.label} ${option.labelForLogs} failed: ${outcome.errorMessage}", LogLevel.Error)
+            }
+            outcome.candidates.isEmpty() -> {
+                appendLog("${source.label} ${option.labelForLogs} found no candidates.", LogLevel.Warning)
+            }
+            else -> {
+                val summary = outcome.candidates.joinToString(limit = 3, truncated = "…") { candidate ->
+                    candidate.versionDisplay
+                }
+                appendLog("${source.label} ${option.labelForLogs} found ${outcome.candidates.size}: $summary")
+            }
+        }
+    }
+
+    private fun appendLog(message: String, level: LogLevel = LogLevel.Info) {
+        val timestamp = synchronized(logTimeFormat) { logTimeFormat.format(Date()) }
+        requestLogs += RequestLogEntry(timestamp, level, message)
+        while (requestLogs.size > 200) {
+            requestLogs.removeAt(0)
+        }
     }
 
     private fun initialCandidateResult(request: HelperRequest): CandidateResult {
@@ -2052,6 +2107,10 @@ class MainActivity : ComponentActivity() {
 
     private fun downloadAndReturn(candidate: DownloadCandidate) {
         val activeRequest = request ?: return
+        appendLog(
+            "Downloading ${candidate.source.label} ${candidate.option.labelForLogs} " +
+                "${candidate.versionDisplay} (${candidate.fileKind.uppercase(Locale.US)})."
+        )
         uiState = UiState.Downloading(candidate, 0)
 
         lifecycleScope.launch {
@@ -2079,9 +2138,14 @@ class MainActivity : ComponentActivity() {
             }
 
             result
-                .onSuccess { file -> returnDownloadedFile(activeRequest, candidate, file) }
+                .onSuccess { file ->
+                    appendLog("Download validated: ${file.name} (${file.length()} bytes).")
+                    returnDownloadedFile(activeRequest, candidate, file)
+                }
                 .onFailure { error ->
-                    uiState = UiState.Error((error.message ?: "Download failed.").withManualModeHint())
+                    val message = (error.message ?: "Download failed.").withManualModeHint()
+                    appendLog(message, LogLevel.Error)
+                    uiState = UiState.Error(message)
                 }
         }
     }
@@ -2197,6 +2261,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setResult(Activity.RESULT_OK, result)
+        appendLog("Returned ${file.name} to ${request.callerPackage}.")
         finish()
     }
 
@@ -2383,11 +2448,15 @@ private fun HelperOutlinedButton(
 private fun HelperScreen(
     request: HelperRequest?,
     state: UiState,
+    logs: List<RequestLogEntry>,
     onRefresh: () -> Unit,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
+    onClearLogs: () -> Unit,
     onCancel: () -> Unit
 ) {
+    var showLogs by remember { mutableStateOf(false) }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
@@ -2421,6 +2490,11 @@ private fun HelperScreen(
                     horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
                 ) {
                     HelperOutlinedButton(
+                        text = if (showLogs) "Hide logs" else "Logs",
+                        onClick = { showLogs = !showLogs },
+                        modifier = Modifier.weight(1f)
+                    )
+                    HelperOutlinedButton(
                         text = "Refresh",
                         onClick = onRefresh,
                         icon = Icons.Outlined.Refresh,
@@ -2430,6 +2504,14 @@ private fun HelperScreen(
                         text = "Cancel",
                         onClick = onCancel,
                         modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            if (showLogs) {
+                item {
+                    RequestLogsCard(
+                        logs = logs,
+                        onClearLogs = onClearLogs
                     )
                 }
             }
@@ -2759,6 +2841,58 @@ private fun InfoCard(text: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(HelperDefaults.ContentPadding)
         )
+    }
+}
+
+@Composable
+private fun RequestLogsCard(
+    logs: List<RequestLogEntry>,
+    onClearLogs: () -> Unit
+) {
+    HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Request logs",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                HelperOutlinedButton(
+                    text = "Clear",
+                    onClick = onClearLogs,
+                    modifier = Modifier.widthIn(min = 96.dp)
+                )
+            }
+
+            if (logs.isEmpty()) {
+                Text(
+                    text = "No logs yet.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        logs.takeLast(80).forEach { entry ->
+                            Text(
+                                text = "${entry.time} ${entry.level.badge} ${entry.message}",
+                                color = entry.level.color(),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -3356,10 +3490,36 @@ private enum class CandidateOption {
     LATEST
 }
 
+private val CandidateOption.labelForLogs: String
+    get() = when (this) {
+        CandidateOption.MANUAL -> "manual"
+        CandidateOption.REQUESTED -> "recommended"
+        CandidateOption.LATEST -> "latest"
+    }
+
 private enum class VersionStatus(val label: String) {
     REQUESTED("Requested"),
     COMPATIBLE("Compatible"),
     LATEST("Latest")
+}
+
+private data class RequestLogEntry(
+    val time: String,
+    val level: LogLevel,
+    val message: String
+)
+
+private enum class LogLevel(val badge: String) {
+    Info("I"),
+    Warning("W"),
+    Error("E")
+}
+
+@Composable
+private fun LogLevel.color(): Color = when (this) {
+    LogLevel.Info -> MaterialTheme.colorScheme.onSurfaceVariant
+    LogLevel.Warning -> Color(0xFFFFD166)
+    LogLevel.Error -> MaterialTheme.colorScheme.error
 }
 
 private sealed interface UiState {
