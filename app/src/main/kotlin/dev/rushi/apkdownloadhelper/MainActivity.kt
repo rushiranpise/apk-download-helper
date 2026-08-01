@@ -13,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -61,7 +62,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -87,6 +90,7 @@ import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
@@ -2532,63 +2536,91 @@ private fun SourceTabs(
     val groups = result.sourceGroups
 
     var selectedIndex by remember(groups.map { it.source }) { mutableIntStateOf(0) }
-    val selectedGroup = groups[selectedIndex.coerceIn(0, groups.lastIndex)]
+    val safeSelectedIndex = selectedIndex.coerceIn(0, groups.lastIndex)
+    val selectedGroup = groups[safeSelectedIndex]
+    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SourceSelector(
             groups = groups,
-            selectedIndex = selectedIndex.coerceIn(0, groups.lastIndex),
+            selectedIndex = safeSelectedIndex,
             onSelect = { selectedIndex = it }
         )
 
-        if (selectedGroup.manual.isNotEmpty()) {
-            SectionHeader("Manual")
-            selectedGroup.manual.forEach { candidate ->
-                CandidateCard(
-                    request = request,
-                    candidate = candidate,
-                    onDownload = { onDownload(candidate) }
-                )
-            }
-        }
-
-        if (request.hasKnownVersionRequest) {
-            when (selectedGroup.source) {
-                DownloadSource.AURORA -> {
-                    InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
-                }
-                DownloadSource.PLAY -> {
-                    InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
-                }
-                else -> {
-                    SectionHeader("Recommended")
-                    CandidateResolveSection(
-                        request = request,
-                        state = selectedGroup.recommended,
-                        actionText = "Find recommended",
-                        loadingText = "Checking recommended version...",
-                        emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
-                        onResolve = {
-                            onResolve(selectedGroup.source, CandidateOption.REQUESTED)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .pointerInput(groups.size, safeSelectedIndex, swipeThresholdPx) {
+                    if (groups.size < 2) return@pointerInput
+                    var totalDrag = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDrag = 0f },
+                        onHorizontalDrag = { _, dragAmount ->
+                            totalDrag += dragAmount
                         },
-                        onDownload = onDownload
+                        onDragEnd = {
+                            if (abs(totalDrag) >= swipeThresholdPx) {
+                                selectedIndex = if (totalDrag < 0) {
+                                    (safeSelectedIndex + 1).coerceAtMost(groups.lastIndex)
+                                } else {
+                                    (safeSelectedIndex - 1).coerceAtLeast(0)
+                                }
+                            }
+                        },
+                        onDragCancel = { totalDrag = 0f }
+                    )
+                },
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            if (selectedGroup.manual.isNotEmpty()) {
+                SectionHeader("Manual")
+                selectedGroup.manual.forEach { candidate ->
+                    CandidateCard(
+                        request = request,
+                        candidate = candidate,
+                        onDownload = { onDownload(candidate) }
                     )
                 }
             }
-        }
 
-        SectionHeader("Latest")
-        CandidateResolveSection(
-            request = request,
-            state = selectedGroup.latest,
-            actionText = "Find latest",
-            loadingText = "Checking latest version...",
-            emptyText = "Latest version was not found on this source. Use Manual mode for this source instead.",
-            onResolve = {
-                onResolve(selectedGroup.source, CandidateOption.LATEST)
-            },
-            onDownload = onDownload
-        )
+            if (request.hasKnownVersionRequest) {
+                when (selectedGroup.source) {
+                    DownloadSource.AURORA -> {
+                        InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
+                    }
+                    DownloadSource.PLAY -> {
+                        InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
+                    }
+                    else -> {
+                        SectionHeader("Recommended")
+                        CandidateResolveSection(
+                            request = request,
+                            state = selectedGroup.recommended,
+                            actionText = "Find recommended",
+                            loadingText = "Checking recommended version...",
+                            emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
+                            onResolve = {
+                                onResolve(selectedGroup.source, CandidateOption.REQUESTED)
+                            },
+                            onDownload = onDownload
+                        )
+                    }
+                }
+            }
+
+            SectionHeader("Latest")
+            CandidateResolveSection(
+                request = request,
+                state = selectedGroup.latest,
+                actionText = "Find latest",
+                loadingText = "Checking latest version...",
+                emptyText = "Latest version was not found on this source. Use Manual mode for this source instead.",
+                onResolve = {
+                    onResolve(selectedGroup.source, CandidateOption.LATEST)
+                },
+                onDownload = onDownload
+            )
+        }
     }
 }
 
