@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -83,6 +84,7 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.util.Locale
 import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlin.math.roundToInt
 import kotlin.random.Random
@@ -1994,11 +1996,13 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    if (files.size == 1) {
+                    val file = if (files.size == 1) {
                         downloadSingleFile(candidate, files.single(), downloadsDir)
                     } else {
                         downloadSplitArchive(candidate, files, downloadsDir)
                     }
+                    validateDownloadedArtifact(activeRequest, candidate, file)
+                    file
                 }
             }
 
@@ -2120,6 +2124,57 @@ class MainActivity : ComponentActivity() {
 
         setResult(Activity.RESULT_OK, result)
         finish()
+    }
+
+    private fun validateDownloadedArtifact(
+        request: HelperRequest,
+        candidate: DownloadCandidate,
+        file: File
+    ) {
+        val shouldValidateMetadata = candidate.fileKind.lowercase(Locale.US) in setOf("apk", "apks", "apkm", "xapk") ||
+            file.extension.lowercase(Locale.US) in setOf("apk", "apks", "apkm", "xapk")
+        val metadata = readDownloadedApkMetadata(file) ?: run {
+            check(!shouldValidateMetadata) {
+                file.delete()
+                "Downloaded file could not be read as an APK."
+            }
+            return
+        }
+        val mismatches = buildList {
+            if (metadata.packageName != request.packageName) {
+                add("Package: requested ${request.packageName}, found ${metadata.packageName}")
+            }
+
+            if (candidate.option == CandidateOption.REQUESTED) {
+                val requestedNames = request.knownVersionNames
+                if (
+                    requestedNames.isNotEmpty() &&
+                    requestedNames.none { metadata.versionName.versionNameEquals(it) }
+                ) {
+                    add(
+                        "Version: requested ${requestedNames.joinToString()}, " +
+                            "found ${metadata.versionName ?: "unknown"}"
+                    )
+                }
+
+                val requestedCodes = request.requestedVersionCodes +
+                    request.compatibleVersionCodes.filter { it > 0L }
+                if (
+                    requestedCodes.isNotEmpty() &&
+                    metadata.versionCode !in requestedCodes
+                ) {
+                    add(
+                        "Version code: requested ${requestedCodes.joinToString()}, " +
+                            "found ${metadata.versionCode ?: "unknown"}"
+                    )
+                }
+            }
+        }
+
+        check(mismatches.isEmpty()) {
+            file.delete()
+            "Downloaded file does not match Morphe request.\n${mismatches.joinToString("\n")}"
+        }
     }
 }
 
@@ -2625,8 +2680,10 @@ private fun CandidateInfoChips(request: HelperRequest, candidate: DownloadCandid
         candidate.versionName?.let {
             HelperChip(text = "Version $it", tone = versionTone)
         }
-        candidate.versionCode?.let {
-            HelperChip(text = "Code $it", tone = versionCodeTone)
+        if (candidate.versionCode != null) {
+            HelperChip(text = "Code ${candidate.versionCode}", tone = versionCodeTone)
+        } else if (requestedVersionCodes.isNotEmpty() && candidate.option == CandidateOption.REQUESTED) {
+            HelperChip(text = "Build checked after download", tone = ChipTone.Neutral)
         }
         if (candidate.versionName == null && candidate.versionCode == null) {
             HelperChip(text = candidate.versionDisplay, tone = versionTone)
@@ -3101,6 +3158,12 @@ private data class CandidateDownloadFile(
     val referer: String? = null
 )
 
+private data class DownloadedApkMetadata(
+    val packageName: String,
+    val versionName: String?,
+    val versionCode: Long?
+)
+
 private enum class DownloadSource(val label: String, val sortIndex: Int) {
     APK_MIRROR("APKMirror", 0),
     UPTODOWN("Uptodown", 1),
@@ -3370,6 +3433,53 @@ private fun validateApkLikeStream(
     }
 
     return SequenceInputStream(ByteArrayInputStream(header, 0, headerSize), input)
+}
+
+private fun Context.readDownloadedApkMetadata(file: File): DownloadedApkMetadata? {
+    if (file.extension.equals("apk", ignoreCase = true)) {
+        return readApkMetadata(file)
+    }
+
+    return runCatching {
+        val validationDir = File(cacheDir, "validation").apply { mkdirs() }
+        ZipFile(file).use { zip ->
+            val entry = zip.entries()
+                .asSequence()
+                .filter { !it.isDirectory && it.name.endsWith(".apk", ignoreCase = true) }
+                .sortedWith(
+                    compareBy<java.util.zip.ZipEntry> {
+                        !it.name.substringAfterLast('/').equals("base.apk", ignoreCase = true)
+                    }.thenBy { it.name }
+                )
+                .firstOrNull()
+                ?: return@runCatching null
+            val extracted = File(
+                validationDir,
+                "${file.nameWithoutExtension}-${entry.name.hashCode()}.apk".sanitizeFileName()
+            )
+            zip.getInputStream(entry).use { input ->
+                extracted.outputStream().use { output -> input.copyTo(output) }
+            }
+            readApkMetadata(extracted).also { extracted.delete() }
+        }
+    }.getOrNull()
+}
+
+@Suppress("DEPRECATION")
+private fun Context.readApkMetadata(file: File): DownloadedApkMetadata? {
+    val info = packageManager.getPackageArchiveInfo(file.absolutePath, PackageManager.GET_META_DATA)
+        ?: return null
+    val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        info.longVersionCode
+    } else {
+        info.versionCode.toLong()
+    }.takeIf { it > 0L }
+
+    return DownloadedApkMetadata(
+        packageName = info.packageName,
+        versionName = info.versionName,
+        versionCode = versionCode
+    )
 }
 
 private fun parseInfoTableValue(doc: Document, label: String): String? =
