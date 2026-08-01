@@ -262,7 +262,7 @@ class MainActivity : ComponentActivity() {
         return ResolveOutcome(
             candidates = candidates,
             errorMessage = lookup.exceptionOrNull()?.message?.let {
-                "Could not check ${source.label}. Use the manual link or try again."
+                "Could not check ${source.label}. Use Manual mode for this source, or try again."
             }
         )
     }
@@ -298,17 +298,12 @@ class MainActivity : ComponentActivity() {
         source: DownloadSource,
         candidates: List<DownloadCandidate>
     ): List<DownloadCandidate> {
-        if (!request.hasKnownVersionRequest || source == DownloadSource.AURORA || source == DownloadSource.PLAY) {
+        if (!request.hasRequestedVersionRequest || source == DownloadSource.AURORA || source == DownloadSource.PLAY) {
             return emptyList()
         }
 
         return buildList {
-            addAll(
-                candidates.filter {
-                    request.isRequestedMatch(it) ||
-                        (it.option == CandidateOption.REQUESTED && it.versionStatus != VersionStatus.LATEST)
-                }
-            )
+            addAll(candidates.filter(request::isRequestedMatch))
             if (source == DownloadSource.APK_MIRROR && none { it.option == CandidateOption.REQUESTED }) {
                 add(apkMirrorRequested(request))
             }
@@ -617,7 +612,7 @@ class MainActivity : ComponentActivity() {
         appPageUrl: String,
         appDoc: Document
     ): String? {
-        val requestedVersions = request.knownVersionNames
+        val requestedVersions = request.requestedVersionNames
         if (requestedVersions.isEmpty()) return null
 
         request.sourceHintUrlsFor(DownloadSource.APK_MIRROR)
@@ -1006,7 +1001,7 @@ class MainActivity : ComponentActivity() {
 
     private fun apkComboRequestedCandidate(request: HelperRequest): DownloadCandidate? {
         val latestPageUrl = apkComboDownloadPageUrls(request).first()
-        return request.knownVersionNames.firstNotNullOfOrNull { requestedVersion ->
+        return request.requestedVersionNames.firstNotNullOfOrNull { requestedVersion ->
             runCatching {
                 apkComboVersionedPageUrls(request, requestedVersion)
                     .firstNotNullOfOrNull { pageUrl ->
@@ -1417,7 +1412,7 @@ class MainActivity : ComponentActivity() {
             entries
                 .firstOrNull { entry ->
                     val versionName = entry.version?.trim()?.takeIf(String::isNotBlank)
-                    versionName != null && request.matchesKnownVersion(versionName, null)
+                    versionName != null && request.matchesRequestedVersion(versionName, null)
                 }
                 ?.let { return it }
         }
@@ -1705,7 +1700,7 @@ class MainActivity : ComponentActivity() {
         }.getOrDefault(false)
 
     private fun apkPureRequestedCandidate(request: HelperRequest, appPageUrl: String): DownloadCandidate? {
-        if (request.knownVersionNames.isEmpty() && request.requestedVersionCodes.isEmpty()) return null
+        if (!request.hasRequestedVersionRequest) return null
 
         val doc = fetchDocument(apkPureInfoUrl(request.packageName))
         val item = doc.select(".version-item")
@@ -1714,7 +1709,7 @@ class MainActivity : ComponentActivity() {
                     ?: sourceVersionFromText(element.text())
                 val versionCode = element.attr("data-dt-version_code").toLongOrNull()
                 element.attr("data-dt-package_name").equals(request.packageName, ignoreCase = true) &&
-                    request.matchesKnownVersion(versionName, versionCode)
+                    request.matchesRequestedVersion(versionName, versionCode)
             }
             ?: return null
 
@@ -1862,7 +1857,7 @@ class MainActivity : ComponentActivity() {
                 .asSequence()
                 .filter { it.packageName == request.packageName }
                 .filter { app ->
-                    request.matchesKnownVersion(app.file.vername, app.file.vercode.toLongOrNull())
+                    request.matchesRequestedVersion(app.file.vername, app.file.vercode.toLongOrNull())
                 }
                 .mapNotNull { app ->
                     aptoideCandidateFromApp(
@@ -1892,14 +1887,14 @@ class MainActivity : ComponentActivity() {
 
         val requestedVersions = versions
             .filter { it.packageName == request.packageName }
-            .filter { app -> request.matchesKnownVersion(app.file.vername, app.file.vercode.toLongOrNull()) }
+            .filter { app -> request.matchesRequestedVersion(app.file.vername, app.file.vercode.toLongOrNull()) }
             .distinctBy(AptoideApp::id)
 
         for (version in requestedVersions) {
             val app = runCatching { aptoideApi.getAppById(version.id).nodes.meta.data }
                 .getOrNull()
                 ?.takeIf { it.packageName == request.packageName }
-                ?.takeIf { request.matchesKnownVersion(it.file.vername, it.file.vercode.toLongOrNull()) }
+                ?.takeIf { request.matchesRequestedVersion(it.file.vername, it.file.vercode.toLongOrNull()) }
                 ?: continue
 
             aptoideCandidateFromApp(
@@ -1917,7 +1912,7 @@ class MainActivity : ComponentActivity() {
             }
             .orEmpty()
             .filter { version ->
-                request.matchesKnownVersion(version.vername, version.vercode.takeIf { it > 0L })
+                request.matchesRequestedVersion(version.vername, version.vercode.takeIf { it > 0L })
             }
             .distinctBy(AptoideVersionItem::id)
 
@@ -1925,7 +1920,7 @@ class MainActivity : ComponentActivity() {
             val app = runCatching { aptoideApi.getAppById(version.id).nodes.meta.data }
                 .getOrNull()
                 ?.takeIf { it.packageName == request.packageName }
-                ?.takeIf { request.matchesKnownVersion(it.file.vername, it.file.vercode.toLongOrNull()) }
+                ?.takeIf { request.matchesRequestedVersion(it.file.vername, it.file.vercode.toLongOrNull()) }
                 ?: continue
 
             aptoideCandidateFromApp(
@@ -2081,7 +2076,9 @@ class MainActivity : ComponentActivity() {
 
             result
                 .onSuccess { file -> returnDownloadedFile(activeRequest, candidate, file) }
-                .onFailure { error -> uiState = UiState.Error(error.message ?: "Download failed") }
+                .onFailure { error ->
+                    uiState = UiState.Error((error.message ?: "Download failed.").withManualModeHint())
+                }
         }
     }
 
@@ -2150,7 +2147,7 @@ class MainActivity : ComponentActivity() {
         copy: (total: Long, input: java.io.InputStream) -> Unit
     ) {
         val url = file.url.normalizedHttpUrlOrNull()
-            ?: error("Source returned an invalid download URL.")
+            ?: error("Source returned an invalid download URL.".withManualModeHint())
         val builder = Request.Builder().url(url)
         file.referer?.let { builder.header("Referer", it) }
 
@@ -2209,7 +2206,7 @@ class MainActivity : ComponentActivity() {
         val metadata = readDownloadedApkMetadata(file) ?: run {
             check(!shouldValidateMetadata) {
                 file.delete()
-                "Downloaded file could not be read as an APK."
+                "Downloaded file could not be read as an APK.".withManualModeHint()
             }
             return
         }
@@ -2247,6 +2244,7 @@ class MainActivity : ComponentActivity() {
         check(mismatches.isEmpty()) {
             file.delete()
             "Downloaded file does not match Morphe request.\n${mismatches.joinToString("\n")}"
+                .withManualModeHint()
         }
     }
 }
@@ -2557,10 +2555,10 @@ private fun SourceTabs(
         if (request.hasKnownVersionRequest) {
             when (selectedGroup.source) {
                 DownloadSource.AURORA -> {
-                    InfoCard("Aurora only provides the latest Play Store version. Recommended version selection is not available from this source.")
+                    InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
                 }
                 DownloadSource.PLAY -> {
-                    InfoCard("Play opens the official Play Store listing for this app. Recommended version selection is not available from this source.")
+                    InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
                 }
                 else -> {
                     SectionHeader("Recommended")
@@ -2569,7 +2567,7 @@ private fun SourceTabs(
                         state = selectedGroup.recommended,
                         actionText = "Find recommended",
                         loadingText = "Checking recommended version...",
-                        emptyText = "Requested version not found on this source.",
+                        emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
                         onResolve = {
                             onResolve(selectedGroup.source, CandidateOption.REQUESTED)
                         },
@@ -2585,7 +2583,7 @@ private fun SourceTabs(
             state = selectedGroup.latest,
             actionText = "Find latest",
             loadingText = "Checking latest version...",
-            emptyText = "Not available",
+            emptyText = "Latest version was not found on this source. Use Manual mode for this source instead.",
             onResolve = {
                 onResolve(selectedGroup.source, CandidateOption.LATEST)
             },
@@ -2786,8 +2784,8 @@ private fun CandidateCard(
 
 @Composable
 private fun CandidateInfoChips(request: HelperRequest, candidate: DownloadCandidate) {
-    val requestedVersionNames = request.knownVersionNames
-    val requestedVersionCodes = request.requestedVersionCodes + request.compatibleVersionCodes.filter { it > 0L }
+    val requestedVersionNames = request.requestedVersionNames
+    val requestedVersionCodes = request.requestedVersionCodes
     val versionTone = when {
         requestedVersionNames.isEmpty() -> ChipTone.Success
         candidate.versionName != null && requestedVersionNames.any { candidate.versionName.versionNameEquals(it) } -> {
@@ -2990,6 +2988,14 @@ private data class HelperRequest(
             .mapNotNull { it.trim().takeIf(String::isNotBlank) }
             .distinctBy { it.normalizedVersionName() }
 
+    val requestedVersionNames: List<String>
+        get() = listOfNotNull(versionName)
+            .mapNotNull { it.trim().takeIf(String::isNotBlank) }
+            .distinctBy { it.normalizedVersionName() }
+
+    val hasRequestedVersionRequest: Boolean
+        get() = versionName != null || requestedVersionCodes.isNotEmpty()
+
     val hasKnownVersionRequest: Boolean
         get() = versionName != null ||
             requestedVersionCodes.isNotEmpty() ||
@@ -3003,7 +3009,7 @@ private data class HelperRequest(
         ).joinToString(" ").ifBlank { "any compatible version" }
 
     fun isRequestedMatch(candidate: DownloadCandidate): Boolean =
-        matchesKnownVersion(candidate.versionName, candidate.versionCode)
+        matchesRequestedVersion(candidate.versionName, candidate.versionCode)
 
     fun versionStatus(candidateVersionName: String?, candidateVersionCode: Long?): VersionStatus {
         if (matchesRequestedVersion(candidateVersionName, candidateVersionCode)) return VersionStatus.REQUESTED
@@ -3248,10 +3254,10 @@ private data class CandidateMatchSummary(
 )
 
 private fun DownloadCandidate.matchSummary(request: HelperRequest): CandidateMatchSummary {
-    val requestedVersionNames = request.knownVersionNames
+    val requestedVersionNames = request.requestedVersionNames
     val versionNameMatches = requestedVersionNames.isEmpty() ||
         (versionName != null && requestedVersionNames.any { versionName.versionNameEquals(it) })
-    val requestedVersionCodes = request.requestedVersionCodes + request.compatibleVersionCodes.filter { it > 0L }
+    val requestedVersionCodes = request.requestedVersionCodes
     val versionCodeMatches = requestedVersionCodes.isEmpty() ||
         versionCode == null ||
         versionCode in requestedVersionCodes
@@ -3680,6 +3686,13 @@ private fun String.normalizedVersionName(): String =
         .replace(Regex("""\b(version|ver|v|release|stable|apk|xapk|apkm|apks|bundle)\b"""), " ")
         .replace(Regex("""[^\p{Alnum}]+"""), ".")
         .trim('.')
+
+private fun String.withManualModeHint(): String {
+    if (contains("Manual mode", ignoreCase = true)) return this
+    val message = trimEnd()
+    val hint = "Use Manual mode for this source instead."
+    return if (message.contains('\n')) "$message\n$hint" else "$message $hint"
+}
 
 private fun sourceVersionFromText(text: String): String? =
     Regex("""\b(v?\d+(?:[._-]\d+)+(?:[-.][A-Za-z0-9]+)?)\b""", RegexOption.IGNORE_CASE)
