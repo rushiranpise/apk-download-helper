@@ -770,6 +770,7 @@ class MainActivity : ComponentActivity() {
             ?: apkMirrorVersions(releaseDoc.html()).firstOrNull()
             ?: apkMirrorVersionFromReleaseUrl(releaseUrl)
         val fileKind = if (isBundle) "apkm" else fileKindFromUrl(finalUrl)
+        if (!request.acceptsFormat(fileKind)) return null
 
         return DownloadCandidate(
             source = DownloadSource.APK_MIRROR,
@@ -821,9 +822,9 @@ class MainActivity : ComponentActivity() {
             .mapNotNull(::apkMirrorVariantFromRow)
         if (variants.isEmpty()) return null
 
-        val wantedTypes = apkMirrorWantedVariantTypes(request)
-        for (type in wantedTypes) {
-            val typedVariants = variants.filter { it.type == type }
+        val wantedKinds = apkMirrorWantedVariantKinds(request)
+        for (kind in wantedKinds) {
+            val typedVariants = variants.filter { it.fileKind == kind }
             typedVariants
                 .firstOrNull { sourceArchMatches(it.arch, request) && apkMirrorDpiMatches(it.dpi) }
                 ?.let { return it }
@@ -832,8 +833,10 @@ class MainActivity : ComponentActivity() {
                 ?.let { return it }
         }
 
-        return variants.firstOrNull { sourceArchMatches(it.arch, request) }
-            ?: variants.firstOrNull()
+        val acceptedVariants = variants.filter { request.acceptsFormat(it.fileKind) }
+        return acceptedVariants.firstOrNull { sourceArchMatches(it.arch, request) && apkMirrorDpiMatches(it.dpi) }
+            ?: acceptedVariants.firstOrNull { sourceArchMatches(it.arch, request) }
+            ?: acceptedVariants.firstOrNull()
     }
 
     private fun apkMirrorVariantFromRow(row: Element): ApkMirrorVariant? {
@@ -847,6 +850,7 @@ class MainActivity : ComponentActivity() {
             ?.uppercase(Locale.US)
             ?.takeIf(String::isNotBlank)
             ?: "APK"
+        val fileKind = apkMirrorVariantFileKind(type)
         val cells = row.select("div.table-cell")
         val arch = cells.getOrNull(1)?.text()?.trim()?.takeIf(String::isNotBlank)
         val dpi = cells.getOrNull(3)?.text()?.trim()?.takeIf(String::isNotBlank)
@@ -854,22 +858,33 @@ class MainActivity : ComponentActivity() {
         return ApkMirrorVariant(
             url = url,
             type = type,
+            fileKind = fileKind,
             arch = arch,
             dpi = dpi,
-            isBundle = type == "BUNDLE"
+            isBundle = fileKind != "apk"
         )
     }
 
-    private fun apkMirrorWantedVariantTypes(request: HelperRequest): List<String> {
+    private fun apkMirrorWantedVariantKinds(request: HelperRequest): List<String> {
         val requested = request.requestedFileType?.lowercase(Locale.US)
         return when {
-            requested == null -> listOf("APK", "BUNDLE")
-            requested.contains("apk") && !request.allowSplitArchive -> listOf("APK")
-            requested.contains("apkm") || requested.contains("apks") || requested.contains("xapk") -> {
-                listOf("BUNDLE", "APK")
-            }
-            request.allowSplitArchive -> listOf("APK", "BUNDLE")
-            else -> listOf("APK", "BUNDLE")
+            requested == null -> listOf("apk", "apkm", "apks", "xapk")
+            requested.contains("apk") && !request.allowSplitArchive -> listOf("apk")
+            requested.contains("apkm") -> listOf("apkm")
+            requested.contains("apks") -> listOf("apks")
+            requested.contains("xapk") -> listOf("xapk")
+            request.allowSplitArchive -> listOf("apk", "apkm", "apks", "xapk")
+            else -> listOf("apk", "apkm", "apks", "xapk")
+        }
+    }
+
+    private fun apkMirrorVariantFileKind(type: String): String {
+        val normalized = type.lowercase(Locale.US)
+        return when {
+            "apks" in normalized -> "apks"
+            "xapk" in normalized -> "xapk"
+            "apkm" in normalized || "bundle" in normalized -> "apkm"
+            else -> "apk"
         }
     }
 
@@ -3349,6 +3364,7 @@ private data class ApkMirrorLatestInfo(
 private data class ApkMirrorVariant(
     val url: String,
     val type: String,
+    val fileKind: String,
     val arch: String?,
     val dpi: String?,
     val isBundle: Boolean
