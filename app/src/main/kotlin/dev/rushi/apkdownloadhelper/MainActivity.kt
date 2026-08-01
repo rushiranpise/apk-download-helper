@@ -37,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -169,6 +170,7 @@ class MainActivity : ComponentActivity() {
                     request = request,
                     state = uiState,
                     onRefresh = ::loadCandidates,
+                    onResolve = ::resolveCandidates,
                     onDownload = ::downloadAndReturn,
                     onCancel = {
                         setResult(Activity.RESULT_CANCELED)
@@ -194,64 +196,147 @@ class MainActivity : ComponentActivity() {
 
     private fun loadCandidates() {
         val activeRequest = request ?: return
-        uiState = UiState.Loading
+        uiState = UiState.Ready(initialCandidateResult(activeRequest))
+    }
 
+    private fun resolveCandidates(source: DownloadSource, option: CandidateOption) {
+        val activeRequest = request ?: return
+        updateResolveState(source, option, ResolveState.Loading)
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                val candidates = buildList {
-                    addAll(runCatching { findApkMirror(activeRequest) }
-                        .onFailure { Log.w(TAG, "APKMirror lookup failed", it) }
-                        .getOrDefault(emptyList()))
-                    addAll(runCatching { findAurora(activeRequest) }
-                        .onFailure { Log.w(TAG, "Aurora lookup failed", it) }
-                        .getOrDefault(emptyList()))
-                    addAll(runCatching { findApkCombo(activeRequest) }
-                        .onFailure { Log.w(TAG, "APKCombo lookup failed", it) }
-                        .getOrDefault(emptyList()))
-                    addAll(runCatching { findApkPure(activeRequest) }
-                        .onFailure { Log.w(TAG, "APKPure lookup failed", it) }
-                        .getOrDefault(emptyList()))
-                    addAll(runCatching { findAptoide(activeRequest) }
-                        .onFailure { Log.w(TAG, "Aptoide lookup failed", it) }
-                        .getOrDefault(emptyList()))
-                    addAll(runCatching { findUptodown(activeRequest) }
-                        .onFailure { Log.w(TAG, "Uptodown lookup failed", it) }
-                        .getOrDefault(emptyList()))
-                }.distinctBy { "${it.source}:${it.packageName}:${it.versionName}:${it.versionCode}:${it.url}" }
-
-                val requestedCandidates = buildList {
-                    if (
-                        activeRequest.hasKnownVersionRequest &&
-                        candidates.none { it.source == DownloadSource.APK_MIRROR && it.option == CandidateOption.REQUESTED }
-                    ) {
-                        add(apkMirrorRequested(activeRequest))
-                    }
-                    addAll(
-                        candidates.filter {
-                            activeRequest.isRequestedMatch(it) ||
-                                (it.option == CandidateOption.REQUESTED && it.versionStatus != VersionStatus.LATEST)
-                        }
-                    )
-                }.sortedBy { it.sortIndex }
-
-                val latestCandidates = buildList {
-                    addAll(candidates.filter { it.option == CandidateOption.LATEST })
-                    if (candidates.none { it.source == DownloadSource.APK_MIRROR && it.option == CandidateOption.LATEST }) {
-                        add(apkMirrorLatest(activeRequest))
-                    }
-                    add(playStoreCandidate(activeRequest))
-                    addAll(latestWebFallbacks(activeRequest, this))
-                }.sortedBy { it.sortIndex }
-
-                CandidateResult(
-                    manual = manualCandidates(activeRequest),
-                    requested = requestedCandidates,
-                    latest = latestCandidates
-                )
+            val resolved = withContext(Dispatchers.IO) {
+                resolveSourceSection(activeRequest, source, option)
             }
 
-            uiState = UiState.Ready(result)
+            updateResolveState(
+                source = source,
+                option = option,
+                state = resolved.errorMessage
+                    ?.takeIf { resolved.candidates.isEmpty() }
+                    ?.let(ResolveState::Error)
+                    ?: ResolveState.Done(resolved.candidates)
+            )
         }
+    }
+
+    private fun updateResolveState(
+        source: DownloadSource,
+        option: CandidateOption,
+        state: ResolveState
+    ) {
+        val activeRequest = request ?: return
+        val current = (uiState as? UiState.Ready)?.result ?: initialCandidateResult(activeRequest)
+        uiState = UiState.Ready(current.withResolveState(source, option, state))
+    }
+
+    private fun initialCandidateResult(request: HelperRequest): CandidateResult {
+        val manual = manualCandidates(request)
+        return CandidateResult(
+            sourceGroups = DownloadSource.entries.map { source ->
+                SourceCandidateGroup(
+                    source = source,
+                    manual = manual.filter { it.source == source },
+                    recommended = ResolveState.Idle,
+                    latest = ResolveState.Idle
+                )
+            }
+        )
+    }
+
+    private suspend fun resolveSourceSection(
+        request: HelperRequest,
+        source: DownloadSource,
+        option: CandidateOption
+    ): ResolveOutcome {
+        val lookup = runCatching { findSourceCandidates(request, source, option) }
+            .onFailure { Log.w(TAG, "${source.label} ${option.name.lowercase(Locale.US)} lookup failed", it) }
+        val sourceCandidates = lookup
+            .getOrDefault(emptyList())
+            .distinctBy(DownloadCandidate::identityKey)
+
+        val candidates = when (option) {
+            CandidateOption.REQUESTED -> recommendedCandidatesForSource(request, source, sourceCandidates)
+            CandidateOption.LATEST -> latestCandidatesForSource(request, source, sourceCandidates)
+            CandidateOption.MANUAL -> emptyList()
+        }
+
+        return ResolveOutcome(
+            candidates = candidates,
+            errorMessage = lookup.exceptionOrNull()?.message?.let {
+                "Could not check ${source.label}. Use the manual link or try again."
+            }
+        )
+    }
+
+    private suspend fun findSourceCandidates(
+        request: HelperRequest,
+        source: DownloadSource,
+        option: CandidateOption
+    ): List<DownloadCandidate> = when (source) {
+        DownloadSource.APK_MIRROR -> when (option) {
+            CandidateOption.REQUESTED -> findApkMirrorRequested(request)
+            CandidateOption.LATEST -> listOf(apkMirrorLatest(request))
+            CandidateOption.MANUAL -> emptyList()
+        }
+        DownloadSource.UPTODOWN -> findUptodown(request, option)
+        DownloadSource.APK_PURE -> findApkPure(request, option)
+        DownloadSource.APK_COMBO -> findApkCombo(request, option)
+        DownloadSource.APTOIDE -> when (option) {
+            CandidateOption.REQUESTED -> listOfNotNull(aptoideRequestedCandidate(request))
+            CandidateOption.LATEST -> listOfNotNull(aptoideLatestCandidate(request))
+            CandidateOption.MANUAL -> emptyList()
+        }
+        DownloadSource.AURORA -> when (option) {
+            CandidateOption.LATEST -> findAurora(request)
+            CandidateOption.REQUESTED,
+            CandidateOption.MANUAL -> emptyList()
+        }
+        DownloadSource.PLAY -> emptyList()
+    }
+
+    private fun recommendedCandidatesForSource(
+        request: HelperRequest,
+        source: DownloadSource,
+        candidates: List<DownloadCandidate>
+    ): List<DownloadCandidate> {
+        if (!request.hasKnownVersionRequest || source == DownloadSource.AURORA || source == DownloadSource.PLAY) {
+            return emptyList()
+        }
+
+        return buildList {
+            addAll(
+                candidates.filter {
+                    request.isRequestedMatch(it) ||
+                        (it.option == CandidateOption.REQUESTED && it.versionStatus != VersionStatus.LATEST)
+                }
+            )
+            if (source == DownloadSource.APK_MIRROR && none { it.option == CandidateOption.REQUESTED }) {
+                add(apkMirrorRequested(request))
+            }
+        }
+            .distinctBy(DownloadCandidate::identityKey)
+            .sortedBy { it.sortIndex }
+    }
+
+    private fun latestCandidatesForSource(
+        request: HelperRequest,
+        source: DownloadSource,
+        candidates: List<DownloadCandidate>
+    ): List<DownloadCandidate> {
+        if (source == DownloadSource.PLAY) {
+            return listOf(playStoreCandidate(request))
+        }
+
+        return buildList {
+            addAll(candidates.filter { it.option == CandidateOption.LATEST })
+            if (source == DownloadSource.APK_MIRROR && none { it.option == CandidateOption.LATEST }) {
+                add(apkMirrorLatest(request))
+            }
+            if (none { it.option == CandidateOption.LATEST }) {
+                latestWebFallback(request, source)?.let(::add)
+            }
+        }
+            .distinctBy(DownloadCandidate::identityKey)
+            .sortedBy { it.sortIndex }
     }
 
     private fun apkMirrorRequested(request: HelperRequest) = DownloadCandidate(
@@ -289,34 +374,15 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun findApkMirror(request: HelperRequest): List<DownloadCandidate> {
-        val searchUrl = apkMirrorPackageSearchUrl(request.packageName)
-        val searchDoc = fetchDocument(searchUrl)
+    private fun findApkMirrorRequested(request: HelperRequest): List<DownloadCandidate> {
+        if (!request.hasKnownVersionRequest) return emptyList()
+
+        val searchDoc = fetchDocument(apkMirrorPackageSearchUrl(request.packageName))
         val appPageUrl = resolveApkMirrorAppPage(
             searchDoc = searchDoc,
             request = request
         ) ?: return emptyList()
         val appDoc = fetchDocument(appPageUrl)
-        val uploadsDoc = runCatching { fetchDocument(apkMirrorUploadsUrl(appPageUrl), referer = appPageUrl) }
-            .onFailure { Log.w(TAG, "APKMirror uploads resolve failed", it) }
-            .getOrNull()
-        val releaseLinks = (
-            uploadsDoc?.let { apkMirrorReleaseLinks(it, appPageUrl) }.orEmpty() +
-                apkMirrorReleaseLinks(appDoc, appPageUrl)
-            ).distinct()
-        val latestReleaseUrl = apkMirrorLatestReleaseUrl(releaseLinks)
-        val latestVersion = latestReleaseUrl?.let(::apkMirrorVersionFromReleaseUrl)
-            ?: apkMirrorSearchVersionForApp(searchDoc, appPageUrl)
-            ?: apkMirrorVersions(appDoc.html()).firstOrNull()
-
-        val latest = latestReleaseUrl?.let { releaseUrl ->
-            apkMirrorCandidateFromReleaseUrl(
-                request = request,
-                releaseUrl = releaseUrl,
-                versionName = latestVersion,
-                option = CandidateOption.LATEST
-            )
-        }
         val requested = apkMirrorRequestedReleaseUrl(
             request = request,
             appPageUrl = appPageUrl,
@@ -330,8 +396,7 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        return listOfNotNull(latest, requested)
-            .distinctBy(DownloadCandidate::identityKey)
+        return listOfNotNull(requested)
     }
 
     private fun apkMirrorPackageSearchUrl(packageName: String): String {
@@ -356,24 +421,24 @@ class MainActivity : ComponentActivity() {
             )
         }.sortedBy { it.sortIndex }
 
-    private fun latestWebFallbacks(
-        request: HelperRequest,
-        resolvedLatest: List<DownloadCandidate>
-    ): List<DownloadCandidate> {
-        val resolvedSources = resolvedLatest.map(DownloadCandidate::source).toSet()
-        return buildList {
-            manualSourceUrls(request)
-                .filter { (source, _) -> source != DownloadSource.PLAY }
-                .forEach { (source, url) ->
-                    addLatestWebFallback(
-                        request = request,
-                        resolvedSources = resolvedSources,
-                        source = source,
-                        url = url
-                    )
-                }
-        }
-    }
+    private fun latestWebFallback(request: HelperRequest, source: DownloadSource): DownloadCandidate? =
+        manualSourceUrls(request)
+            .firstOrNull { (candidateSource, _) -> candidateSource == source }
+            ?.let { (_, url) ->
+                DownloadCandidate(
+                    source = source,
+                    name = request.appName,
+                    packageName = request.packageName,
+                    versionName = null,
+                    versionCode = null,
+                    url = url,
+                    fileKind = "web",
+                    option = CandidateOption.LATEST,
+                    directDownload = false,
+                    versionStatus = VersionStatus.LATEST,
+                    formatMatches = true
+                )
+            }
 
     private fun manualSourceUrls(request: HelperRequest): List<Pair<DownloadSource, String>> =
         listOf(
@@ -383,30 +448,6 @@ class MainActivity : ComponentActivity() {
             DownloadSource.APK_COMBO to apkComboSearchUrl(request.packageName),
             DownloadSource.APTOIDE to aptoideSearchUrl(request.packageName)
         )
-
-    private fun MutableList<DownloadCandidate>.addLatestWebFallback(
-        request: HelperRequest,
-        resolvedSources: Set<DownloadSource>,
-        source: DownloadSource,
-        url: String
-    ) {
-        if (source in resolvedSources) return
-        add(
-            DownloadCandidate(
-                source = source,
-                name = request.appName,
-                packageName = request.packageName,
-                versionName = null,
-                versionCode = null,
-                url = url,
-                fileKind = "web",
-                option = CandidateOption.LATEST,
-                directDownload = false,
-                versionStatus = VersionStatus.LATEST,
-                formatMatches = true
-            )
-        )
-    }
 
     private fun playStoreCandidate(request: HelperRequest) = DownloadCandidate(
         source = DownloadSource.PLAY,
@@ -941,7 +982,14 @@ class MainActivity : ComponentActivity() {
             else -> "file_$index.apk"
         }
 
-    private fun findApkCombo(request: HelperRequest): List<DownloadCandidate> {
+    private fun findApkCombo(request: HelperRequest, option: CandidateOption): List<DownloadCandidate> =
+        when (option) {
+            CandidateOption.REQUESTED -> listOfNotNull(apkComboRequestedCandidate(request))
+            CandidateOption.LATEST -> listOfNotNull(apkComboLatestCandidate(request))
+            CandidateOption.MANUAL -> emptyList()
+        }
+
+    private fun apkComboLatestCandidate(request: HelperRequest): DownloadCandidate? {
         val latestPageUrls = apkComboDownloadPageUrls(request)
         val latestResult = latestPageUrls
             .firstNotNullOfOrNull { pageUrl ->
@@ -953,33 +1001,31 @@ class MainActivity : ComponentActivity() {
                     )?.let { it to pageUrl }
                 }.getOrNull()
             }
-        val latest = latestResult?.first
-        val resolvedLatestPageUrl = latestResult?.second ?: latestPageUrls.first()
+        return latestResult?.first
+    }
 
-        val requested = request.knownVersionNames
-            .takeUnless { latest != null && request.isRequestedMatch(latest) }
-            ?.firstNotNullOfOrNull { requestedVersion ->
-                runCatching {
-                    apkComboVersionedPageUrls(request, requestedVersion)
-                        .firstNotNullOfOrNull { pageUrl ->
+    private fun apkComboRequestedCandidate(request: HelperRequest): DownloadCandidate? {
+        val latestPageUrl = apkComboDownloadPageUrls(request).first()
+        return request.knownVersionNames.firstNotNullOfOrNull { requestedVersion ->
+            runCatching {
+                apkComboVersionedPageUrls(request, requestedVersion)
+                    .firstNotNullOfOrNull { pageUrl ->
+                        apkComboCandidateFromPage(
+                            request = request,
+                            pageUrl = pageUrl,
+                            option = CandidateOption.REQUESTED
+                        )?.takeIf(request::isRequestedMatch)
+                    }
+                    ?: apkComboOldVersionPageUrl(request, latestPageUrl, requestedVersion)
+                        ?.let { oldPageUrl ->
                             apkComboCandidateFromPage(
                                 request = request,
-                                pageUrl = pageUrl,
+                                pageUrl = oldPageUrl,
                                 option = CandidateOption.REQUESTED
                             )?.takeIf(request::isRequestedMatch)
                         }
-                        ?: apkComboOldVersionPageUrl(request, resolvedLatestPageUrl, requestedVersion)
-                            ?.let { oldPageUrl ->
-                                apkComboCandidateFromPage(
-                                    request = request,
-                                    pageUrl = oldPageUrl,
-                                    option = CandidateOption.REQUESTED
-                                )?.takeIf(request::isRequestedMatch)
-                            }
-                }.getOrNull()
-            }
-
-        return listOfNotNull(latest, requested)
+            }.getOrNull()
+        }
     }
 
     private fun apkComboDownloadPageUrls(request: HelperRequest): List<String> {
@@ -1201,19 +1247,19 @@ class MainActivity : ComponentActivity() {
             ?.toLongOrNull()
     }
 
-    private fun findUptodown(request: HelperRequest): List<DownloadCandidate> {
+    private fun findUptodown(request: HelperRequest, option: CandidateOption): List<DownloadCandidate> {
         return uptodownDetailUrls(request)
             .firstNotNullOfOrNull { detailUrl ->
-                val latest = runCatching { uptodownCandidateFromDetailUrl(request, detailUrl) }
-                    .onFailure { Log.w(TAG, "Uptodown latest resolve failed", it) }
+                runCatching {
+                    when (option) {
+                        CandidateOption.REQUESTED -> uptodownRequestedCandidateFromDetailUrl(request, detailUrl)
+                        CandidateOption.LATEST -> uptodownCandidateFromDetailUrl(request, detailUrl)
+                        CandidateOption.MANUAL -> null
+                    }
+                }
+                    .onFailure { Log.w(TAG, "Uptodown ${option.name.lowercase(Locale.US)} resolve failed", it) }
                     .getOrNull()
-                val requested = runCatching { uptodownRequestedCandidateFromDetailUrl(request, detailUrl) }
-                    .onFailure { Log.w(TAG, "Uptodown requested version resolve failed", it) }
-                    .getOrNull()
-
-                listOfNotNull(latest, requested)
-                    .distinctBy(DownloadCandidate::identityKey)
-                    .takeIf { it.isNotEmpty() }
+                    ?.let(::listOf)
             }
             .orEmpty()
     }
@@ -1560,7 +1606,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun findApkPure(request: HelperRequest): List<DownloadCandidate> {
+    private suspend fun findApkPure(request: HelperRequest, option: CandidateOption): List<DownloadCandidate> =
+        when (option) {
+            CandidateOption.REQUESTED -> listOfNotNull(apkPureRequestedCandidate(request))
+            CandidateOption.LATEST -> apkPureLatestCandidates(request)
+            CandidateOption.MANUAL -> emptyList()
+        }
+
+    private suspend fun apkPureLatestCandidates(request: HelperRequest): List<DownloadCandidate> {
         val response = apkPureApi.getAppUpdate(
             header = gson.toJson(ApkPureDeviceHeader()),
             request = ApkPureUpdateRequest(
@@ -1621,16 +1674,18 @@ class MainActivity : ComponentActivity() {
             null
         }
 
-        val latestCandidates = apiLatestCandidates + listOfNotNull(webLatestCandidate)
-        val requestedCandidate = if (latestCandidates.any(request::isRequestedMatch)) {
-            null
-        } else {
-            runCatching { appPageUrl?.let { apkPureRequestedCandidate(request, it) } }
-                .onFailure { Log.w(TAG, "APKPure requested version resolve failed", it) }
-                .getOrNull()
-        }
+        return apiLatestCandidates + listOfNotNull(webLatestCandidate)
+    }
 
-        return (latestCandidates + requestedCandidate).filterNotNull()
+    private fun apkPureRequestedCandidate(request: HelperRequest): DownloadCandidate? {
+        val appPageUrl = runCatching { apkPureAppPageUrl(request) }
+            .onFailure { Log.w(TAG, "APKPure app page resolve failed", it) }
+            .getOrNull()
+            ?: return null
+
+        return runCatching { apkPureRequestedCandidate(request, appPageUrl) }
+            .onFailure { Log.w(TAG, "APKPure requested version resolve failed", it) }
+            .getOrNull()
     }
 
     private fun apkPureInfoUrl(packageName: String): String =
@@ -1756,18 +1811,6 @@ class MainActivity : ComponentActivity() {
         if (doc.title().equals("Error", ignoreCase = true)) return false
         if (doc.text().contains("Oopps! The page can't be found", ignoreCase = true)) return false
         return true
-    }
-
-    private suspend fun findAptoide(request: HelperRequest): List<DownloadCandidate> {
-        val latestCandidate = runCatching { aptoideLatestCandidate(request) }
-            .onFailure { Log.w(TAG, "Aptoide latest resolve failed", it) }
-            .getOrNull()
-        val requestedCandidate = runCatching { aptoideRequestedCandidate(request) }
-            .onFailure { Log.w(TAG, "Aptoide requested version resolve failed", it) }
-            .getOrNull()
-
-        return listOfNotNull(latestCandidate, requestedCandidate)
-            .distinctBy(DownloadCandidate::identityKey)
     }
 
     private suspend fun aptoideLatestCandidate(request: HelperRequest): DownloadCandidate? {
@@ -2309,6 +2352,7 @@ private fun HelperScreen(
     request: HelperRequest?,
     state: UiState,
     onRefresh: () -> Unit,
+    onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -2367,6 +2411,7 @@ private fun HelperScreen(
                         SourceTabs(
                             request = request,
                             result = state.result,
+                            onResolve = onResolve,
                             onDownload = onDownload
                         )
                     }
@@ -2453,13 +2498,10 @@ private fun LoadingState() {
 private fun SourceTabs(
     request: HelperRequest,
     result: CandidateResult,
+    onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit
 ) {
     val groups = result.sourceGroups
-    if (groups.isEmpty()) {
-        InfoCard("No source currently has a candidate for this app.")
-        return
-    }
 
     var selectedIndex by remember(groups.map { it.source }) { mutableIntStateOf(0) }
     val selectedGroup = groups[selectedIndex.coerceIn(0, groups.lastIndex)]
@@ -2492,32 +2534,93 @@ private fun SourceTabs(
                 }
                 else -> {
                     SectionHeader("Recommended")
-                    if (selectedGroup.recommended.isEmpty()) {
-                        InfoCard("Requested version not found on this source.")
-                    } else {
-                        selectedGroup.recommended.forEach { candidate ->
-                            CandidateCard(
-                                request = request,
-                                candidate = candidate,
-                                onDownload = { onDownload(candidate) }
-                            )
-                        }
-                    }
+                    CandidateResolveSection(
+                        request = request,
+                        state = selectedGroup.recommended,
+                        actionText = "Find recommended",
+                        loadingText = "Checking recommended version...",
+                        emptyText = "Requested version not found on this source.",
+                        onResolve = {
+                            onResolve(selectedGroup.source, CandidateOption.REQUESTED)
+                        },
+                        onDownload = onDownload
+                    )
                 }
             }
         }
 
         SectionHeader("Latest")
-        if (selectedGroup.latest.isEmpty()) {
-            InfoCard("Not available")
-        } else {
-            selectedGroup.latest.forEach { candidate ->
-                CandidateCard(
-                    request = request,
-                    candidate = candidate,
-                    onDownload = { onDownload(candidate) }
-                )
+        CandidateResolveSection(
+            request = request,
+            state = selectedGroup.latest,
+            actionText = "Find latest",
+            loadingText = "Checking latest version...",
+            emptyText = "Not available",
+            onResolve = {
+                onResolve(selectedGroup.source, CandidateOption.LATEST)
+            },
+            onDownload = onDownload
+        )
+    }
+}
+
+@Composable
+private fun CandidateResolveSection(
+    request: HelperRequest,
+    state: ResolveState,
+    actionText: String,
+    loadingText: String,
+    emptyText: String,
+    onResolve: () -> Unit,
+    onDownload: (DownloadCandidate) -> Unit
+) {
+    when (state) {
+        ResolveState.Idle -> {
+            HelperOutlinedButton(
+                text = actionText,
+                onClick = onResolve,
+                icon = Icons.Outlined.Search,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        ResolveState.Loading -> {
+            HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(HelperDefaults.ContentPadding),
+                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Text(loadingText, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
+        }
+
+        is ResolveState.Done -> {
+            if (state.candidates.isEmpty()) {
+                InfoCard(emptyText)
+            } else {
+                state.candidates.forEach { candidate ->
+                    CandidateCard(
+                        request = request,
+                        candidate = candidate,
+                        onDownload = { onDownload(candidate) }
+                    )
+                }
+            }
+        }
+
+        is ResolveState.Error -> {
+            InfoCard(state.message)
+            HelperOutlinedButton(
+                text = "Try again",
+                onClick = onResolve,
+                icon = Icons.Outlined.Refresh,
+                modifier = Modifier.fillMaxWidth()
+            )
         }
     }
 }
@@ -2995,41 +3098,45 @@ private data class HelperRequest(
 }
 
 private data class CandidateResult(
-    val manual: List<DownloadCandidate>,
-    val requested: List<DownloadCandidate>,
-    val latest: List<DownloadCandidate>
-) {
     val sourceGroups: List<SourceCandidateGroup>
-        get() = DownloadSource.entries.mapNotNull { source ->
-            val sourceManual = manual
-                .filter { it.source == source }
-                .distinctBy(DownloadCandidate::identityKey)
-            val recommended = requested
-                .filter { it.source == source && source != DownloadSource.AURORA && source != DownloadSource.PLAY }
-                .distinctBy(DownloadCandidate::identityKey)
-            val sourceLatest = latest
-                .filter { it.source == source }
-                .distinctBy(DownloadCandidate::identityKey)
-
-            if (sourceManual.isEmpty() && recommended.isEmpty() && sourceLatest.isEmpty()) {
-                null
+) {
+    fun withResolveState(
+        source: DownloadSource,
+        option: CandidateOption,
+        state: ResolveState
+    ): CandidateResult = copy(
+        sourceGroups = sourceGroups.map { group ->
+            if (group.source != source) {
+                group
             } else {
-                SourceCandidateGroup(
-                    source = source,
-                    manual = sourceManual,
-                    recommended = recommended,
-                    latest = sourceLatest
-                )
+                when (option) {
+                    CandidateOption.REQUESTED -> group.copy(recommended = state)
+                    CandidateOption.LATEST -> group.copy(latest = state)
+                    CandidateOption.MANUAL -> group
+                }
             }
         }
+    )
 }
 
 private data class SourceCandidateGroup(
     val source: DownloadSource,
     val manual: List<DownloadCandidate>,
-    val recommended: List<DownloadCandidate>,
-    val latest: List<DownloadCandidate>
+    val recommended: ResolveState,
+    val latest: ResolveState
 )
+
+private data class ResolveOutcome(
+    val candidates: List<DownloadCandidate>,
+    val errorMessage: String? = null
+)
+
+private sealed interface ResolveState {
+    data object Idle : ResolveState
+    data object Loading : ResolveState
+    data class Done(val candidates: List<DownloadCandidate>) : ResolveState
+    data class Error(val message: String) : ResolveState
+}
 
 private data class ApkMirrorLatestInfo(
     val versionName: String?,
