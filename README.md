@@ -65,55 +65,7 @@ Successful result:
 - `Intent.data` points to the downloaded file URI
 - `Intent.FLAG_GRANT_READ_URI_PERMISSION` is granted to the caller
 
-## Build
-
-Requirements:
-
-- JDK 17
-- Android SDK with compile SDK 36
-- Network access for Gradle dependencies
-
-Build a debug APK:
-
-```bash
-./gradlew :app:assembleDebug
-```
-
-Build a release APK:
-
-```bash
-./gradlew :app:assembleRelease
-```
-
-APK outputs are written under:
-
-```text
-app/build/outputs/apk/
-```
-
-The current Gradle config signs release builds with the debug signing config. Replace the signing setup before publishing a production release.
-
-## Release Workflow
-
-The GitHub Actions workflow in `.github/workflows/release.yml` builds the release APK and creates or updates a GitHub Release.
-
-Automatic release:
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-Manual release:
-
-1. Open the `Build and release APK` workflow in GitHub Actions.
-2. Run it with a release tag such as `v0.1.0`.
-
-Release notes are generated from git commits since the previous tag. The APK is attached to the release.
-
 ## Credits
-
-Provider research, source behavior, and implementation references were informed by:
 
 - [APKUpdater](https://github.com/rumboalla/apkupdater)
 - [Aurora Store](https://gitlab.com/AuroraOSS/AuroraStore)
@@ -125,12 +77,12 @@ This helper does not claim ownership of source website data, packages, trademark
 
 APK hosting and indexing costs money. If this helper saves you time, consider supporting the services it relies on:
 
-- [APKMirror Premium](https://www.apkmirror.com/premium/)
-- [Uptodown Turbo](https://en.uptodown.com/turbo)
-- [APKPure Premium](https://apkpure.com/premium)
-- [APKCombo Premium](https://apkcombo.com/premium/)
-- [Aptoide Premium](https://en.aptoide.com/premium)
-- [Aurora Store donations](https://gitlab.com/AuroraOSS/AuroraStore/#donations)
+- [APKMirror](https://www.apkmirror.com/premium/)
+- [Uptodown](https://en.uptodown.com/turbo)
+- [APKPure](https://apkpure.com/premium)
+- [APKCombo](https://apkcombo.com/premium/)
+- [Aptoide](https://en.aptoide.com/premium)
+- [Aurora Store](https://gitlab.com/AuroraOSS/AuroraStore/#donations)
 
 ## License
 
