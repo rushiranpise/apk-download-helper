@@ -1,0 +1,121 @@
+name: Build and release APK
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set release tag
+        id: release_tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          if [[ ! "$tag" =~ ^v[0-9]+(\.[0-9]+)*([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must look like v0.1.0 or v0.1.0-beta.1" >&2
+            exit 1
+          fi
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          git fetch --tags --force
+          if ! git rev-parse -q --verify "refs/tags/${{ steps.release_tag.outputs.tag }}" >/dev/null; then
+            git tag "${{ steps.release_tag.outputs.tag }}" "${GITHUB_SHA}"
+            git push origin "${{ steps.release_tag.outputs.tag }}"
+          fi
+
+      - name: Checkout release tag for manual runs
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: git checkout --force "${{ steps.release_tag.outputs.tag }}"
+
+      - name: Build release APK
+        shell: bash
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleRelease
+
+      - name: Prepare release files
+        id: release_files
+        shell: bash
+        run: |
+          tag="${{ steps.release_tag.outputs.tag }}"
+          apk_name="apk-download-helper-${tag}.apk"
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk "dist/${apk_name}"
+          echo "apk_path=dist/${apk_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        shell: bash
+        run: |
+          tag="${{ steps.release_tag.outputs.tag }}"
+          previous_tag="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
+
+          {
+            echo "## APK Download Helper ${tag}"
+            echo
+            if [[ -n "$previous_tag" ]]; then
+              echo "Changes since ${previous_tag}:"
+              echo
+              git log --pretty=format:"- %s (%h)" "${previous_tag}..${tag}"
+            else
+              echo "Changes:"
+              echo
+              git log --pretty=format:"- %s (%h)" "${tag}"
+            fi
+            echo
+          } > release-notes.md
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="${{ steps.release_tag.outputs.tag }}"
+          apk_path="${{ steps.release_files.outputs.apk_path }}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$apk_path" --clobber
+            gh release edit "$tag" \
+              --title "APK Download Helper ${tag}" \
+              --notes-file release-notes.md
+          else
+            gh release create "$tag" "$apk_path" \
+              --title "APK Download Helper ${tag}" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi

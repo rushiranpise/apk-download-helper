@@ -1876,10 +1876,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun aptoideVersionHistoryCandidate(request: HelperRequest): DownloadCandidate? {
-        val appId = runCatching {
-            val appPageUrl = resolveAptoideAppPageUrl(request) ?: return@runCatching null
-            aptoideAppFromPage(appPageUrl)?.id
-        }.getOrNull()
+        val appPageUrl = runCatching { resolveAptoideAppPageUrl(request) }.getOrNull()
+        val appId = appPageUrl?.let { url ->
+            runCatching { aptoideAppFromPage(url)?.id }.getOrNull()
+        }
 
         val versions = buildList {
             addAll(runCatching { aptoideApi.listAppVersionsByPackage(request.packageName).list }
@@ -1906,6 +1906,32 @@ class MainActivity : ComponentActivity() {
                     request = request,
                     app = app,
                     option = CandidateOption.REQUESTED
+            )?.let { return it }
+        }
+
+        val requestedWebVersions = appPageUrl
+            ?.let { url ->
+                val versionsUrl = url.trimEnd('/').removeSuffix("/app") + "/versions"
+                runCatching { aptoideVersionsFromPage(versionsUrl, request.packageName) }
+                    .getOrDefault(emptyList())
+            }
+            .orEmpty()
+            .filter { version ->
+                request.matchesKnownVersion(version.vername, version.vercode.takeIf { it > 0L })
+            }
+            .distinctBy(AptoideVersionItem::id)
+
+        for (version in requestedWebVersions) {
+            val app = runCatching { aptoideApi.getAppById(version.id).nodes.meta.data }
+                .getOrNull()
+                ?.takeIf { it.packageName == request.packageName }
+                ?.takeIf { request.matchesKnownVersion(it.file.vername, it.file.vercode.toLongOrNull()) }
+                ?: continue
+
+            aptoideCandidateFromApp(
+                request = request,
+                app = app,
+                option = CandidateOption.REQUESTED
             )?.let { return it }
         }
 
@@ -1963,7 +1989,11 @@ class MainActivity : ComponentActivity() {
             ?: return emptyList()
         return runCatching {
             val page = gson.fromJson(json, AptoideNextData::class.java).props.pageProps
-            if (page.packageName != packageName) emptyList() else page.versions
+            if (page.packageName.isNotBlank() && page.packageName != packageName) {
+                emptyList()
+            } else {
+                page.versions
+            }
         }.getOrDefault(emptyList())
     }
 
@@ -2452,9 +2482,9 @@ private fun AppInfoCard(request: HelperRequest) {
             AppInfoRow(label = "Format", value = request.requestedFormatLabel)
             AppInfoRow(label = "ABI", value = request.supportedAbis.firstOrNull() ?: "Default")
 
-            if (request.installStockAfterDownload) {
+            if (request.stockInstallRequired) {
                 Text(
-                    text = "Root mount may require installing the stock app before Morphe patches it.",
+                    text = "Root mount may require the stock app before Morphe patches it.",
                     color = MaterialTheme.colorScheme.secondary
                 )
             }
@@ -2930,7 +2960,7 @@ private data class HelperRequest(
     val supportedAbis: List<String>,
     val requestedFileType: String?,
     val allowSplitArchive: Boolean,
-    val installStockAfterDownload: Boolean,
+    val stockInstallRequired: Boolean,
     val fallbackWebUrl: String,
     val sourceHintUrls: List<String>
 ) {
@@ -3081,11 +3111,12 @@ private data class HelperRequest(
                     .getStringArrayExtra(DownloadHelperContract.EXTRA_SUPPORTED_ABIS)
                     ?.toList()
                     .orEmpty(),
-                requestedFileType = intent.getStringExtra(DownloadHelperContract.EXTRA_REQUESTED_FILE_TYPE),
+                requestedFileType = intent.getStringExtra(DownloadHelperContract.EXTRA_FILE_TYPE)
+                    ?: intent.getStringExtra(DownloadHelperContract.EXTRA_REQUESTED_FILE_TYPE),
                 allowSplitArchive = intent.getBooleanExtra(DownloadHelperContract.EXTRA_ALLOW_SPLIT_ARCHIVE, false),
-                installStockAfterDownload = intent.getBooleanExtra(
-                    DownloadHelperContract.EXTRA_INSTALL_STOCK_AFTER_DOWNLOAD,
-                    false
+                stockInstallRequired = intent.getBooleanExtra(
+                    DownloadHelperContract.EXTRA_STOCK_INSTALL_REQUIRED,
+                    intent.getBooleanExtra(DownloadHelperContract.EXTRA_INSTALL_STOCK_AFTER_DOWNLOAD, false)
                 ),
                 fallbackWebUrl = intent.getStringExtra(DownloadHelperContract.EXTRA_FALLBACK_WEB_URL)
                     ?: "https://www.apkmirror.com/?post_type=app_release&searchtype=app&s=$packageName",
@@ -3303,6 +3334,7 @@ private sealed interface UiState {
 
 private object DownloadHelperContract {
     const val ACTION_DOWNLOAD_ORIGINAL_APK = "app.morphe.manager.action.DOWNLOAD_ORIGINAL_APK"
+    const val EXTRA_PROTOCOL_VERSION = "app.morphe.manager.extra.PROTOCOL_VERSION"
     const val EXTRA_CALLER_PACKAGE = "app.morphe.manager.extra.CALLER_PACKAGE"
     const val EXTRA_PACKAGE_NAME = "app.morphe.manager.extra.PACKAGE_NAME"
     const val EXTRA_APP_NAME = "app.morphe.manager.extra.APP_NAME"
@@ -3312,8 +3344,10 @@ private object DownloadHelperContract {
     const val EXTRA_COMPATIBLE_VERSION_NAMES = "app.morphe.manager.extra.COMPATIBLE_VERSION_NAMES"
     const val EXTRA_COMPATIBLE_VERSION_CODES = "app.morphe.manager.extra.COMPATIBLE_VERSION_CODES"
     const val EXTRA_SUPPORTED_ABIS = "app.morphe.manager.extra.SUPPORTED_ABIS"
+    const val EXTRA_FILE_TYPE = "app.morphe.manager.extra.FILE_TYPE"
     const val EXTRA_REQUESTED_FILE_TYPE = "app.morphe.manager.extra.REQUESTED_FILE_TYPE"
     const val EXTRA_ALLOW_SPLIT_ARCHIVE = "app.morphe.manager.extra.ALLOW_SPLIT_ARCHIVE"
+    const val EXTRA_STOCK_INSTALL_REQUIRED = "app.morphe.manager.extra.STOCK_INSTALL_REQUIRED"
     const val EXTRA_INSTALL_STOCK_AFTER_DOWNLOAD = "app.morphe.manager.extra.INSTALL_STOCK_AFTER_DOWNLOAD"
     const val EXTRA_FALLBACK_WEB_URL = "app.morphe.manager.extra.FALLBACK_WEB_URL"
     const val EXTRA_SOURCE_HINT_URLS = "app.morphe.manager.extra.SOURCE_HINT_URLS"
