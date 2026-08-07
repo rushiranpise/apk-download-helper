@@ -5,6 +5,12 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val helperVersionName = providers.gradleProperty("helperVersionName")
+    .orElse(providers.environmentVariable("HELPER_VERSION_NAME"))
+val helperVersionCode = providers.gradleProperty("helperVersionCode")
+    .orElse(providers.environmentVariable("HELPER_VERSION_CODE"))
+    .map(String::toInt)
+
 android {
     namespace = "dev.rushi.apkdownloadhelper"
     compileSdk = 36
@@ -13,8 +19,8 @@ android {
         applicationId = "dev.rushi.apkdownloadhelper"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = helperVersionCode.get()
+        versionName = helperVersionName.get()
     }
 
     buildTypes {

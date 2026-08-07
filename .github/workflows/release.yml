@@ -47,6 +47,15 @@ jobs:
           fi
 
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          version_name="${tag#v}"
+          version_core="${version_name%%[-+]*}"
+          IFS='.' read -r major minor patch _ <<< "$version_core"
+          major="${major:-0}"
+          minor="${minor:-0}"
+          patch="${patch:-0}"
+          version_code=$((major * 1000000 + minor * 10000 + patch * 100))
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
 
       - name: Create tag for manual runs
         if: github.event_name == 'workflow_dispatch'
@@ -67,7 +76,9 @@ jobs:
         shell: bash
         run: |
           chmod +x ./gradlew
-          ./gradlew :app:assembleRelease
+          ./gradlew :app:assembleRelease \
+            -PhelperVersionName="${{ steps.release_tag.outputs.version_name }}" \
+            -PhelperVersionCode="${{ steps.release_tag.outputs.version_code }}"
 
       - name: Prepare release files
         id: release_files
