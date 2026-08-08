@@ -878,13 +878,7 @@ class MainActivity : ComponentActivity() {
         val fileKind = variant?.fileKind ?: if (isBundle) "apkm" else fileKindFromUrl(finalUrl)
         if (!request.acceptsFormat(fileKind)) return null
         val variantLabel = variant?.displayLabel()
-        val variantFileSuffix = variantLabel
-            ?.lowercase(Locale.US)
-            ?.replace(Regex("""[^a-z0-9._-]+"""), "-")
-            ?.trim('-')
-            ?.takeIf(String::isNotBlank)
-            ?.let { "-$it" }
-            .orEmpty()
+        val variantFileSuffix = variantLabel.variantFileSuffix()
 
         return DownloadCandidate(
             source = DownloadSource.APK_MIRROR,
@@ -941,8 +935,7 @@ class MainActivity : ComponentActivity() {
         for (kind in wantedKinds) {
             val typedVariants = variants.filter {
                 it.fileKind == kind &&
-                    request.acceptsFormat(it.fileKind) &&
-                    sourceArchMatches(it.arch, request)
+                    request.acceptsFormat(it.fileKind)
             }
             typedVariants.filter { apkMirrorDpiMatches(it.dpi) }
                 .takeIf(List<ApkMirrorVariant>::isNotEmpty)
@@ -951,9 +944,7 @@ class MainActivity : ComponentActivity() {
                 ?.let { return it }
         }
 
-        val acceptedVariants = variants.filter {
-            request.acceptsFormat(it.fileKind) && sourceArchMatches(it.arch, request)
-        }
+        val acceptedVariants = variants.filter { request.acceptsFormat(it.fileKind) }
         return acceptedVariants.filter { apkMirrorDpiMatches(it.dpi) }
             .takeIf(List<ApkMirrorVariant>::isNotEmpty)
             ?: acceptedVariants
@@ -1184,48 +1175,48 @@ class MainActivity : ComponentActivity() {
 
     private fun findApkCombo(request: HelperRequest, option: CandidateOption): List<DownloadCandidate> =
         when (option) {
-            CandidateOption.REQUESTED -> listOfNotNull(apkComboRequestedCandidate(request))
-            CandidateOption.LATEST -> listOfNotNull(apkComboLatestCandidate(request))
+            CandidateOption.REQUESTED -> apkComboRequestedCandidates(request)
+            CandidateOption.LATEST -> apkComboLatestCandidates(request)
             CandidateOption.MANUAL -> emptyList()
         }
 
-    private fun apkComboLatestCandidate(request: HelperRequest): DownloadCandidate? {
-        val latestPageUrls = apkComboDownloadPageUrls(request)
-        val latestResult = latestPageUrls
+    private fun apkComboLatestCandidates(request: HelperRequest): List<DownloadCandidate> =
+        apkComboDownloadPageUrls(request)
             .firstNotNullOfOrNull { pageUrl ->
                 runCatching {
-                    apkComboCandidateFromPage(
+                    apkComboCandidatesFromPage(
                         request = request,
                         pageUrl = pageUrl,
                         option = CandidateOption.LATEST
-                    )?.let { it to pageUrl }
+                    ).takeIf(List<DownloadCandidate>::isNotEmpty)
                 }.getOrNull()
             }
-        return latestResult?.first
-    }
+            .orEmpty()
 
-    private fun apkComboRequestedCandidate(request: HelperRequest): DownloadCandidate? {
+    private fun apkComboRequestedCandidates(request: HelperRequest): List<DownloadCandidate> {
         val latestPageUrl = apkComboDownloadPageUrls(request).first()
         return request.requestedVersionNames.firstNotNullOfOrNull { requestedVersion ->
             runCatching {
                 apkComboVersionedPageUrls(request, requestedVersion)
                     .firstNotNullOfOrNull { pageUrl ->
-                        apkComboCandidateFromPage(
+                        apkComboCandidatesFromPage(
                             request = request,
                             pageUrl = pageUrl,
                             option = CandidateOption.REQUESTED
-                        )?.takeIf(request::isRequestedMatch)
+                        ).filter(request::isRequestedMatch)
+                            .takeIf(List<DownloadCandidate>::isNotEmpty)
                     }
                     ?: apkComboOldVersionPageUrl(request, latestPageUrl, requestedVersion)
                         ?.let { oldPageUrl ->
-                            apkComboCandidateFromPage(
+                            apkComboCandidatesFromPage(
                                 request = request,
                                 pageUrl = oldPageUrl,
                                 option = CandidateOption.REQUESTED
-                            )?.takeIf(request::isRequestedMatch)
+                            ).filter(request::isRequestedMatch)
+                                .takeIf(List<DownloadCandidate>::isNotEmpty)
                         }
             }.getOrNull()
-        }
+        }.orEmpty()
     }
 
     private fun apkComboDownloadPageUrls(request: HelperRequest): List<String> {
@@ -1315,24 +1306,49 @@ class MainActivity : ComponentActivity() {
         return "https://apkcombo.com/${request.appName.slugForUrl()}/${request.packageName}/old-versions/"
     }
 
-    private fun apkComboCandidateFromPage(
+    private fun apkComboCandidatesFromPage(
         request: HelperRequest,
         pageUrl: String,
         option: CandidateOption
-    ): DownloadCandidate? {
+    ): List<DownloadCandidate> {
         val doc = fetchDocument(pageUrl)
-        if (!apkComboPageMatchesPackage(doc, pageUrl, request.packageName)) return null
+        if (!apkComboPageMatchesPackage(doc, pageUrl, request.packageName)) return emptyList()
 
-        val variant = doc.select("a.variant[href]").firstOrNull() ?: return null
-        val href = variant.absUrl("href").ifBlank { "https://apkcombo.com${variant.attr("href")}" }
         val checkIn = fetchText("https://apkcombo.com/checkin", referer = pageUrl).trim()
+        val versionName = apkComboVersion(doc, pageUrl) ?: request.versionName.takeIf { option == CandidateOption.REQUESTED }
+
+        return doc.select("a.variant[href]")
+            .mapNotNull { variant ->
+                apkComboCandidateFromVariant(
+                    request = request,
+                    pageUrl = pageUrl,
+                    option = option,
+                    versionName = versionName,
+                    checkIn = checkIn,
+                    variant = variant
+                )
+            }
+            .distinctBy(DownloadCandidate::identityKey)
+    }
+
+    private fun apkComboCandidateFromVariant(
+        request: HelperRequest,
+        pageUrl: String,
+        option: CandidateOption,
+        versionName: String?,
+        checkIn: String,
+        variant: Element
+    ): DownloadCandidate? {
+        val href = variant.absUrl("href").ifBlank { "https://apkcombo.com${variant.attr("href")}" }
         val downloadUrl = (if (checkIn.isNotBlank()) "$href&$checkIn" else href)
             .normalizedHttpUrlOrNull()
             ?: return null
-        val versionName = apkComboVersion(doc, pageUrl) ?: request.versionName.takeIf { option == CandidateOption.REQUESTED }
         val versionCode = apkComboVersionCode(href)
         val fileKind = fileKindFromUrl(href)
-        val fileName = "${request.packageName}-${versionName ?: "latest"}-apkcombo.$fileKind".sanitizeFileName()
+        if (!request.acceptsFormat(fileKind)) return null
+        val variantLabel = apkComboVariantLabel(variant)
+        val fileName = "${request.packageName}-${versionName ?: "latest"}-apkcombo${variantLabel.variantFileSuffix()}.$fileKind"
+            .sanitizeFileName()
 
         return DownloadCandidate(
             source = DownloadSource.APK_COMBO,
@@ -1346,6 +1362,7 @@ class MainActivity : ComponentActivity() {
             directDownload = true,
             versionStatus = request.versionStatus(versionName, versionCode),
             formatMatches = request.acceptsFormat(fileKind),
+            variantLabel = variantLabel,
             files = listOf(
                 CandidateDownloadFile(
                     url = downloadUrl,
@@ -1355,6 +1372,20 @@ class MainActivity : ComponentActivity() {
             )
         )
     }
+
+    private fun apkComboVariantLabel(variant: Element): String? =
+        listOf(
+            variant.attr("data-arch"),
+            variant.attr("data-abi"),
+            variant.attr("data-cpu"),
+            variant.attr("title"),
+            variant.text()
+        )
+            .firstOrNull { it.isNotBlank() }
+            ?.replace(Regex("""\s+"""), " ")
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?.archDisplayLabel()
 
     private fun apkComboPageMatchesPackage(doc: Document, pageUrl: String, packageName: String): Boolean {
         if (pageUrl.contains("/search/$packageName/", ignoreCase = true) ||
@@ -1735,13 +1766,7 @@ class MainActivity : ComponentActivity() {
         val fileKind = variant.fileKind.lowercase(Locale.US)
         val directUrl = uptodownDownloadUrlFromPage(tokenDoc) ?: return null
         val variantLabel = variant.displayLabel()
-        val variantFileSuffix = variantLabel
-            ?.lowercase(Locale.US)
-            ?.replace(Regex("""[^a-z0-9._-]+"""), "-")
-            ?.trim('-')
-            ?.takeIf(String::isNotBlank)
-            ?.let { "-$it" }
-            .orEmpty()
+        val variantFileSuffix = variantLabel.variantFileSuffix()
 
         return DownloadCandidate(
             source = DownloadSource.UPTODOWN,
@@ -1788,11 +1813,10 @@ class MainActivity : ComponentActivity() {
             ?.takeIf(String::isNotBlank)
             ?: return emptyList()
         val variants = uptodownVariantFiles(Jsoup.parse(content, detailUrl))
-        val archMatches = variants.filter { variant -> sourceArchMatches(variant.archLabel, request) }
 
-        return archMatches.filter { request.acceptsFormat(it.fileKind) }
+        return variants.filter { request.acceptsFormat(it.fileKind) }
             .takeIf(List<UptodownVariantFile>::isNotEmpty)
-            ?: archMatches
+            ?: variants
     }
 
     private fun uptodownVariantFiles(doc: Document): List<UptodownVariantFile> {
@@ -1828,23 +1852,6 @@ class MainActivity : ComponentActivity() {
 
     private fun UptodownVariantFile.displayLabel(): String? =
         archLabel?.archDisplayLabel()
-
-    private fun sourceArchMatches(archLabel: String?, request: HelperRequest): Boolean {
-        val cleanLabel = archLabel
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?: return true
-        if (cleanLabel.isUniversalArchLabel()) return true
-
-        val normalizedLabel = cleanLabel.lowercase(Locale.US)
-        val supportedAbis = request.availableAbis.map { it.lowercase(Locale.US) }
-        if (supportedAbis.isEmpty()) return true
-
-        return supportedAbis.any { abi ->
-            normalizedLabel.contains(abi) ||
-                (abi == "armeabi-v7a" && normalizedLabel.contains("arm-v7a"))
-        }
-    }
 
     private fun String.archDisplayLabel(): String =
         if (isUniversalArchLabel()) {
@@ -3328,7 +3335,7 @@ private fun AppInfoCard(request: HelperRequest) {
             AppInfoRow(label = "Version", value = request.versionName ?: "Any compatible")
             AppInfoRow(label = "Version code", value = request.versionCodeSummary ?: "Any")
             AppInfoRow(label = "Format", value = request.requestedFormatLabel)
-            AppInfoRow(label = "ABI", value = request.abiSummary)
+            AppInfoRow(label = "Device ABI", value = request.abiSummary)
 
             if (request.stockInstallRequired) {
                 Text(
@@ -4740,6 +4747,15 @@ private fun String.versionNumberParts(): List<Int> =
         .findAll(this)
         .mapNotNull { it.value.toIntOrNull() }
         .toList()
+
+private fun String?.variantFileSuffix(): String =
+    this
+        ?.lowercase(Locale.US)
+        ?.replace(Regex("""[^a-z0-9._-]+"""), "-")
+        ?.trim('-')
+        ?.takeIf(String::isNotBlank)
+        ?.let { "-$it" }
+        .orEmpty()
 
 private fun String.sanitizeFileName(): String =
     replace(Regex("[^A-Za-z0-9._-]"), "_")
