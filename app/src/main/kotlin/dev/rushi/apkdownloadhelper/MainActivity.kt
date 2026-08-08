@@ -378,9 +378,7 @@ class MainActivity : ComponentActivity() {
 
         return ResolveOutcome(
             candidates = candidates,
-            errorMessage = lookup.exceptionOrNull()?.message?.let {
-                "Could not check ${source.label}. Use Manual mode for this source, or try again."
-            }
+            errorMessage = lookup.exceptionOrNull()?.let { sourceFailureMessage(source, it) }
         )
     }
 
@@ -824,15 +822,18 @@ class MainActivity : ComponentActivity() {
             )
         }
             .onFailure { Log.w(TAG, "APKMirror direct resolve failed: $releaseUrl", it) }
-            .getOrDefault(emptyList())
+        val directFailureMessage = directCandidates.exceptionOrNull()
+            ?.let { sourceFailureMessage(DownloadSource.APK_MIRROR, it) }
+        val resolvedDirectCandidates = directCandidates.getOrDefault(emptyList())
 
-        return directCandidates.ifEmpty {
+        return resolvedDirectCandidates.ifEmpty {
             listOf(
                 apkMirrorReleaseFallbackCandidate(
                     request = request,
                     releaseUrl = releaseUrl,
                     versionName = versionName,
-                    option = option
+                    option = option,
+                    note = directFailureMessage
                 )
             )
         }
@@ -924,7 +925,8 @@ class MainActivity : ComponentActivity() {
         request: HelperRequest,
         releaseUrl: String,
         versionName: String?,
-        option: CandidateOption
+        option: CandidateOption,
+        note: String? = null
     ) = DownloadCandidate(
         source = DownloadSource.APK_MIRROR,
         name = request.appName,
@@ -936,7 +938,8 @@ class MainActivity : ComponentActivity() {
         option = option,
         directDownload = false,
         versionStatus = request.versionStatus(versionName ?: apkMirrorVersionFromReleaseUrl(releaseUrl), null),
-        formatMatches = true
+        formatMatches = true,
+        note = note
     )
 
     private fun apkMirrorVariants(releaseDoc: Document): List<ApkMirrorVariant> =
@@ -2487,7 +2490,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 .onFailure { error ->
-                    val message = (error.message ?: "Download failed.").withManualModeHint()
+                    val message = downloadFailureMessage(candidate, error)
                     appendLog(message, LogLevel.Error)
                     uiState = UiState.Error(message)
                 }
@@ -3831,6 +3834,9 @@ private fun CandidateCard(
             if (candidate.option != CandidateOption.MANUAL && hasResolvedCandidateInfo && !match.matches) {
                 CandidateMatchBox(match)
             }
+            candidate.note?.let { note ->
+                InfoCard(note)
+            }
 
             if (candidate.directDownload) {
                 HelperButton(
@@ -4360,6 +4366,7 @@ private data class DownloadCandidate(
     val directDownload: Boolean,
     val versionStatus: VersionStatus,
     val formatMatches: Boolean,
+    val note: String? = null,
     val variantLabel: String? = null,
     val files: List<CandidateDownloadFile> = emptyList()
 ) {
@@ -4877,6 +4884,55 @@ private fun String.withManualModeHint(): String {
     val hint = "Use Manual mode for this source instead."
     return if (message.contains('\n')) "$message\n$hint" else "$message $hint"
 }
+
+private fun sourceFailureMessage(source: DownloadSource, error: Throwable): String =
+    sourceFailureMessage(source.label, error, action = "check")
+
+private fun downloadFailureMessage(candidate: DownloadCandidate, error: Throwable): String =
+    sourceFailureMessage(candidate.source.label, error, action = "download")
+
+private fun sourceFailureMessage(sourceLabel: String, error: Throwable, action: String): String {
+    val details = error.failureDetails()
+    val httpCode = Regex("""\bHTTP\s+(\d{3})\b""", RegexOption.IGNORE_CASE)
+        .find(details)
+        ?.groupValues
+        ?.getOrNull(1)
+    val actionText = if (action == "download") "download" else "check"
+
+    return when {
+        httpCode == "403" -> {
+            "$sourceLabel blocked automated access (HTTP 403), likely due to bot protection. Open the link and download manually."
+        }
+        httpCode == "429" -> {
+            "$sourceLabel rate-limited the helper (HTTP 429). Try again later or use Manual mode."
+        }
+        httpCode == "404" -> {
+            "$sourceLabel did not have the requested page (HTTP 404). Use Manual mode for this source instead."
+        }
+        httpCode != null -> {
+            "$sourceLabel returned HTTP $httpCode during $actionText. Use Manual mode for this source instead."
+        }
+        details.contains("cloudflare", ignoreCase = true) -> {
+            "$sourceLabel showed a browser verification page, so direct access is blocked. Open the link and download manually."
+        }
+        details.contains("timeout", ignoreCase = true) -> {
+            "$sourceLabel took too long to respond. Try again or use Manual mode."
+        }
+        details.contains("Unable to resolve host", ignoreCase = true) ||
+            details.contains("failed to connect", ignoreCase = true) -> {
+            "Could not connect to $sourceLabel. Check your connection or use Manual mode."
+        }
+        else -> {
+            "Could not $actionText $sourceLabel: ${details.ifBlank { "unknown error" }}".withManualModeHint()
+        }
+    }
+}
+
+private fun Throwable.failureDetails(): String =
+    generateSequence(this) { it.cause }
+        .mapNotNull { it.message?.trim()?.takeIf(String::isNotBlank) }
+        .firstOrNull()
+        ?: javaClass.simpleName
 
 private fun sourceVersionFromText(text: String): String? =
     Regex("""\b(v?\d+(?:[._-]\d+)+(?:[-.][A-Za-z0-9]+)?)\b""", RegexOption.IGNORE_CASE)
