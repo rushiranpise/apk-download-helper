@@ -46,6 +46,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.OpenInBrowser
@@ -195,6 +196,7 @@ class MainActivity : ComponentActivity() {
     private var request by mutableStateOf<HelperRequest?>(null)
     private var uiState by mutableStateOf<UiState>(UiState.Idle)
     private var helperSettings by mutableStateOf(HelperSettings())
+    private var installedPackageRefreshToken by mutableIntStateOf(0)
     private val requestLogs = mutableStateListOf<RequestLogEntry>()
     private val logTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -214,11 +216,13 @@ class MainActivity : ComponentActivity() {
                     state = uiState,
                     settings = helperSettings,
                     logs = requestLogs,
+                    installedPackageRefreshToken = installedPackageRefreshToken,
                     onSettingsChange = ::updateHelperSettings,
                     onRefresh = ::loadCandidates,
                     onResolve = ::resolveCandidates,
                     onDownload = ::downloadAndReturn,
                     onPickDownloadedFile = ::returnPickedFile,
+                    onUseInstalledApp = ::returnInstalledApp,
                     onClearLogs = { requestLogs.clear() },
                     onCancel = {
                         setResult(Activity.RESULT_CANCELED)
@@ -231,6 +235,11 @@ class MainActivity : ComponentActivity() {
         if (request != null) loadCandidates()
     }
 
+    override fun onResume() {
+        super.onResume()
+        installedPackageRefreshToken++
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -241,6 +250,7 @@ class MainActivity : ComponentActivity() {
         } else {
             uiState = UiState.Idle
         }
+        installedPackageRefreshToken++
     }
 
     private fun loadCandidates() {
@@ -2526,6 +2536,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun returnInstalledApp(candidate: DownloadCandidate) {
+        val activeRequest = request ?: return
+        if (!isPackageInstalled(candidate.packageName)) {
+            appendLog("${candidate.packageName} is not installed yet.", LogLevel.Warning)
+            installedPackageRefreshToken++
+            return
+        }
+
+        val result = Intent().apply {
+            putExtra(DownloadHelperContract.EXTRA_RESULT_USE_INSTALLED_APP, true)
+            putExtra(DownloadHelperContract.EXTRA_RESULT_PACKAGE_NAME, candidate.packageName)
+            putExtra(DownloadHelperContract.EXTRA_RESULT_VERSION_NAME, candidate.versionName)
+            putExtra(DownloadHelperContract.EXTRA_RESULT_SOURCE_NAME, candidate.source.label)
+        }
+
+        setResult(Activity.RESULT_OK, result)
+        appendLog("Returned installed ${candidate.packageName} to ${activeRequest.callerPackage}.")
+        finish()
+    }
+
     private fun copyPickedFileToTemporary(candidate: DownloadCandidate, uri: Uri): File {
         val displayName = displayNameForUri(uri)
         val extension = displayName
@@ -3041,11 +3071,13 @@ private fun HelperScreen(
     state: UiState,
     settings: HelperSettings,
     logs: List<RequestLogEntry>,
+    installedPackageRefreshToken: Int,
     onSettingsChange: (HelperSettings) -> Unit,
     onRefresh: () -> Unit,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
     onPickDownloadedFile: (DownloadCandidate, Uri?) -> Unit,
+    onUseInstalledApp: (DownloadCandidate) -> Unit,
     onClearLogs: () -> Unit,
     onCancel: () -> Unit
 ) {
@@ -3159,7 +3191,9 @@ private fun HelperScreen(
                             result = state.result,
                             onResolve = onResolve,
                             onDownload = onDownload,
-                            onPickDownloadedFile = openDownloadedFilePicker
+                            onPickDownloadedFile = openDownloadedFilePicker,
+                            onUseInstalledApp = onUseInstalledApp,
+                            installedPackageRefreshToken = installedPackageRefreshToken
                         )
                     }
                 }
@@ -3457,7 +3491,9 @@ private fun SourceTabs(
     result: CandidateResult,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
-    onPickDownloadedFile: (DownloadCandidate) -> Unit
+    onPickDownloadedFile: (DownloadCandidate) -> Unit,
+    onUseInstalledApp: (DownloadCandidate) -> Unit,
+    installedPackageRefreshToken: Int
 ) {
     val groups = result.sourceGroups
 
@@ -3505,7 +3541,9 @@ private fun SourceTabs(
                         request = request,
                         candidate = candidate,
                         onDownload = { onDownload(candidate) },
-                        onPickDownloadedFile = { onPickDownloadedFile(candidate) }
+                        onPickDownloadedFile = { onPickDownloadedFile(candidate) },
+                        onUseInstalledApp = { onUseInstalledApp(candidate) },
+                        installedPackageRefreshToken = installedPackageRefreshToken
                     )
                 }
             }
@@ -3530,7 +3568,9 @@ private fun SourceTabs(
                                 onResolve(selectedGroup.source, CandidateOption.REQUESTED)
                             },
                             onDownload = onDownload,
-                            onPickDownloadedFile = onPickDownloadedFile
+                            onPickDownloadedFile = onPickDownloadedFile,
+                            onUseInstalledApp = onUseInstalledApp,
+                            installedPackageRefreshToken = installedPackageRefreshToken
                         )
                     }
                 }
@@ -3547,7 +3587,9 @@ private fun SourceTabs(
                     onResolve(selectedGroup.source, CandidateOption.LATEST)
                 },
                 onDownload = onDownload,
-                onPickDownloadedFile = onPickDownloadedFile
+                onPickDownloadedFile = onPickDownloadedFile,
+                onUseInstalledApp = onUseInstalledApp,
+                installedPackageRefreshToken = installedPackageRefreshToken
             )
         }
     }
@@ -3562,7 +3604,9 @@ private fun CandidateResolveSection(
     emptyText: String,
     onResolve: () -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
-    onPickDownloadedFile: (DownloadCandidate) -> Unit
+    onPickDownloadedFile: (DownloadCandidate) -> Unit,
+    onUseInstalledApp: (DownloadCandidate) -> Unit,
+    installedPackageRefreshToken: Int
 ) {
     when (state) {
         ResolveState.Idle -> {
@@ -3598,7 +3642,9 @@ private fun CandidateResolveSection(
                         request = request,
                         candidate = candidate,
                         onDownload = { onDownload(candidate) },
-                        onPickDownloadedFile = { onPickDownloadedFile(candidate) }
+                        onPickDownloadedFile = { onPickDownloadedFile(candidate) },
+                        onUseInstalledApp = { onUseInstalledApp(candidate) },
+                        installedPackageRefreshToken = installedPackageRefreshToken
                     )
                 }
             }
@@ -3755,7 +3801,9 @@ private fun CandidateCard(
     request: HelperRequest,
     candidate: DownloadCandidate,
     onDownload: () -> Unit,
-    onPickDownloadedFile: () -> Unit
+    onPickDownloadedFile: () -> Unit,
+    onUseInstalledApp: () -> Unit,
+    installedPackageRefreshToken: Int
 ) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
@@ -3764,6 +3812,11 @@ private fun CandidateCard(
         candidate.versionCode != null ||
         !candidate.fileKind.equals("web", ignoreCase = true)
     var hasOpenedLink by remember(candidate.identityKey()) { mutableStateOf(false) }
+    val showUseInstalledApp = candidate.source == DownloadSource.PLAY &&
+        hasOpenedLink &&
+        remember(candidate.packageName, hasOpenedLink, installedPackageRefreshToken) {
+            context.isPackageInstalled(candidate.packageName)
+        }
 
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
@@ -3805,6 +3858,14 @@ private fun CandidateCard(
                         text = "Select downloaded file",
                         onClick = onPickDownloadedFile,
                         icon = Icons.Outlined.FolderOpen,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                if (showUseInstalledApp) {
+                    HelperButton(
+                        text = "Use installed app",
+                        onClick = onUseInstalledApp,
+                        icon = Icons.Outlined.CheckCircle,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -4454,6 +4515,7 @@ private object DownloadHelperContract {
     const val EXTRA_INSTALL_STOCK_AFTER_DOWNLOAD = "app.morphe.manager.extra.INSTALL_STOCK_AFTER_DOWNLOAD"
     const val EXTRA_FALLBACK_WEB_URL = "app.morphe.manager.extra.FALLBACK_WEB_URL"
     const val EXTRA_SOURCE_HINT_URLS = "app.morphe.manager.extra.SOURCE_HINT_URLS"
+    const val EXTRA_RESULT_USE_INSTALLED_APP = "app.morphe.manager.extra.RESULT_USE_INSTALLED_APP"
     const val EXTRA_RESULT_PACKAGE_NAME = "app.morphe.manager.extra.RESULT_PACKAGE_NAME"
     const val EXTRA_RESULT_VERSION_NAME = "app.morphe.manager.extra.RESULT_VERSION_NAME"
     const val EXTRA_RESULT_SOURCE_NAME = "app.morphe.manager.extra.RESULT_SOURCE_NAME"
@@ -4647,6 +4709,16 @@ private fun Context.openPlayStoreListing(packageName: String, fallbackUrl: Strin
     runCatching { startActivity(marketIntent) }
         .onFailure { startActivity(webIntent) }
 }
+
+private fun Context.isPackageInstalled(packageName: String): Boolean =
+    runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            packageManager.getPackageInfo(packageName, PackageManager.PackageInfoFlags.of(0))
+        } else {
+            @Suppress("DEPRECATION")
+            packageManager.getPackageInfo(packageName, 0)
+        }
+    }.isSuccess
 
 private fun String.normalizedHttpUrlOrNull(): String? {
     val normalized = trim().let { url ->
