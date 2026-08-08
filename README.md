@@ -43,6 +43,23 @@ The helper has its own settings screen:
 
 Temporary hand-off is the default because Morphe Manager copies the returned APK URI into its own private workspace before patching.
 
+## Source Audit Script
+
+Use `tools/audit_helper_sources.py` to test source availability for every app declared in a Morphe `Constants.kt` file without launching the Android app:
+
+```powershell
+python tools\audit_helper_sources.py --output reports\source-audit.csv
+```
+
+Useful targeted checks:
+
+```powershell
+python tools\audit_helper_sources.py --package club.boxbox.android --sources apkpure,aptoide,apkcombo
+python tools\audit_helper_sources.py --limit 20 --sources apkmirror,uptodown,apkpure,apkcombo,aptoide
+```
+
+The CSV/JSON output reports whether each source matched the requested version, only found latest, found the wrong file format, or failed to resolve the package.
+
 ## Intent Contract
 
 Request action:

@@ -5,3 +5,6 @@ local.properties
 **/build/
 *.iml
 *.hprof
+reports/
+__pycache__/
+*.pyc
