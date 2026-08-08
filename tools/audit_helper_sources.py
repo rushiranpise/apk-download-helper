@@ -822,7 +822,7 @@ def parse_info_table_value(page: str, label: str) -> str | None:
 def apkmirror_app_urls(page: str) -> list[str]:
     urls = []
     for href in re.findall(r'href=["\']([^"\']+)["\']', page, re.I):
-        absolute = urllib.parse.urljoin("https://www.apkmirror.com/", html.unescape(href))
+        absolute = urllib.parse.urljoin("https://www.apkmirror.com/", html.unescape(href)).split("#", 1)[0]
         path = urllib.parse.urlparse(absolute).path
         if re.fullmatch(r"/apk/[^/]+/[^/]+/?", path):
             urls.append(absolute)
@@ -833,7 +833,7 @@ def apkmirror_release_urls(page: str, app_url: str) -> list[str]:
     app_path = urllib.parse.urlparse(app_url).path.rstrip("/")
     urls = []
     for href in re.findall(r'href=["\']([^"\']+)["\']', page, re.I):
-        absolute = urllib.parse.urljoin("https://www.apkmirror.com/", html.unescape(href))
+        absolute = urllib.parse.urljoin("https://www.apkmirror.com/", html.unescape(href)).split("#", 1)[0]
         path = urllib.parse.urlparse(absolute).path.rstrip("/")
         if path.startswith("/apk/") and path.endswith("-release") and path.startswith(app_path):
             urls.append(absolute)

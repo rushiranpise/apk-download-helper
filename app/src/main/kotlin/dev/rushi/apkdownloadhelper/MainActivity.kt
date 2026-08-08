@@ -593,7 +593,7 @@ class MainActivity : ComponentActivity() {
         val expectedSlugs = apkMirrorExpectedAppSlugs(request)
         return searchDoc.select("a[href]")
             .asSequence()
-            .map { it.absUrl("href") }
+            .mapNotNull { apkMirrorAbsoluteUrl(it.attr("href")) }
             .filter { url ->
                 runCatching {
                     java.net.URI(url).path.matches(Regex("""/apk/[^/]+/[^/]+/?"""))
@@ -744,7 +744,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun apkMirrorUploadsUrl(appPageUrl: String): String {
-        val category = appPageUrl.trimEnd('/').substringAfterLast('/')
+        val category = runCatching {
+            Uri.parse(appPageUrl).path
+                ?.trim('/')
+                ?.substringAfterLast('/')
+                ?.takeIf(String::isNotBlank)
+        }.getOrNull()
+            ?: appPageUrl.substringBefore('#').substringBefore('?').trimEnd('/').substringAfterLast('/')
         return "https://www.apkmirror.com/uploads/?appcategory=$category"
     }
 
