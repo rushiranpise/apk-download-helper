@@ -3236,21 +3236,22 @@ private fun AbiSelector(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall
         )
-        FlowRow(
-            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall),
-            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
-        ) {
-            SourcePill(
-                text = "Auto",
-                selected = selectedAbi == null,
-                onClick = { onSelectedAbiChange(null) }
-            )
-            availableAbis.forEach { abi ->
-                SourcePill(
-                    text = abi,
-                    selected = selectedAbi == abi,
-                    onClick = { onSelectedAbiChange(abi) }
-                )
+        (listOf<String?>(null) + availableAbis).chunked(2).forEach { rowAbis ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+            ) {
+                rowAbis.forEach { abi ->
+                    SourcePill(
+                        text = abi ?: "Auto",
+                        selected = selectedAbi == abi,
+                        onClick = { onSelectedAbiChange(abi) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                if (rowAbis.size == 1) {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
             }
         }
     }
@@ -3476,11 +3477,16 @@ private fun SourceSelector(
 }
 
 @Composable
-private fun SourcePill(text: String, selected: Boolean, onClick: () -> Unit) {
+private fun SourcePill(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val shape = RoundedCornerShape(50)
     val colors = MaterialTheme.colorScheme
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .height(44.dp)
             .widthIn(min = 92.dp)
             .clip(shape)
