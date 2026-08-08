@@ -97,7 +97,7 @@ jobs:
           previous_tag="$(git describe --tags --abbrev=0 "${tag}^" 2>/dev/null || true)"
 
           {
-            echo "## APK Download Helper ${tag}"
+            echo "## Release ${tag}"
             echo
             if [[ -n "$previous_tag" ]]; then
               echo "Changes since ${previous_tag}:"
@@ -122,11 +122,11 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" "$apk_path" --clobber
             gh release edit "$tag" \
-              --title "APK Download Helper ${tag}" \
+              --title "Release ${tag}" \
               --notes-file release-notes.md
           else
             gh release create "$tag" "$apk_path" \
-              --title "APK Download Helper ${tag}" \
+              --title "Release ${tag}" \
               --notes-file release-notes.md \
               --verify-tag
           fi
