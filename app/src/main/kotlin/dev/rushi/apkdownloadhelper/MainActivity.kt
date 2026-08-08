@@ -2,12 +2,17 @@ package dev.rushi.apkdownloadhelper
 
 import android.app.Activity
 import android.content.ClipData
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -40,6 +45,7 @@ import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -48,6 +54,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.surfaceColorAtElevation
@@ -117,6 +124,9 @@ import retrofit2.http.Query
 
 private const val AURORA_AUTH_URL = "https://auroraoss.com/api/auth"
 private const val TAG = "ApkDownloadHelper"
+private const val PREFS_NAME = "helper_settings"
+private const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
+private const val TEMP_CLEANUP_MAX_AGE_MS = 6 * 60 * 60 * 1000L
 
 class MainActivity : ComponentActivity() {
     private val browserUserAgent =
@@ -167,20 +177,27 @@ class MainActivity : ComponentActivity() {
 
     private var request by mutableStateOf<HelperRequest?>(null)
     private var uiState by mutableStateOf<UiState>(UiState.Idle)
+    private var helperSettings by mutableStateOf(HelperSettings())
     private val requestLogs = mutableStateListOf<RequestLogEntry>()
     private val logTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        helperSettings = loadHelperSettings()
         request = HelperRequest.from(intent)
         startRequestLog(request)
+        lifecycleScope.launch(Dispatchers.IO) {
+            cleanupTemporaryDownloads(helperSettings)
+        }
 
         setContent {
             HelperTheme {
                 HelperScreen(
                     request = request,
                     state = uiState,
+                    settings = helperSettings,
                     logs = requestLogs,
+                    onSettingsChange = ::updateHelperSettings,
                     onRefresh = ::loadCandidates,
                     onResolve = ::resolveCandidates,
                     onDownload = ::downloadAndReturn,
@@ -216,6 +233,11 @@ class MainActivity : ComponentActivity() {
 
     private fun resolveCandidates(source: DownloadSource, option: CandidateOption) {
         val activeRequest = request ?: return
+        helperSettings.networkPolicy.blockReason(this)?.let { message ->
+            appendLog(message, LogLevel.Warning)
+            updateResolveState(source, option, ResolveState.Error(message))
+            return
+        }
         appendLog("Checking ${option.labelForLogs} from ${source.label}.")
         updateResolveState(source, option, ResolveState.Loading)
         lifecycleScope.launch {
@@ -284,6 +306,14 @@ class MainActivity : ComponentActivity() {
         requestLogs += RequestLogEntry(timestamp, level, message)
         while (requestLogs.size > 200) {
             requestLogs.removeAt(0)
+        }
+    }
+
+    private fun updateHelperSettings(settings: HelperSettings) {
+        helperSettings = settings
+        saveHelperSettings(settings)
+        lifecycleScope.launch(Dispatchers.IO) {
+            cleanupTemporaryDownloads(settings)
         }
     }
 
@@ -2122,6 +2152,12 @@ class MainActivity : ComponentActivity() {
 
     private fun downloadAndReturn(candidate: DownloadCandidate) {
         val activeRequest = request ?: return
+        val settings = helperSettings
+        settings.networkPolicy.blockReason(this)?.let { message ->
+            appendLog(message, LogLevel.Warning)
+            uiState = UiState.Error(message)
+            return
+        }
         appendLog(
             "Downloading ${candidate.source.label} ${candidate.option.labelForLogs} " +
                 "${candidate.versionDisplay} (${candidate.fileKind.uppercase(Locale.US)})."
@@ -2131,7 +2167,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val downloadsDir = File(cacheDir, "downloads").apply { mkdirs() }
+                    val downloadsDir = temporaryDownloadsDir().apply { mkdirs() }
                     val files = candidate.files.ifEmpty {
                         listOf(
                             CandidateDownloadFile(
@@ -2155,7 +2191,14 @@ class MainActivity : ComponentActivity() {
             result
                 .onSuccess { file ->
                     appendLog("Download validated: ${file.name} (${file.length()} bytes).")
-                    returnDownloadedFile(activeRequest, candidate, file)
+                    runCatching {
+                        returnDownloadedFile(activeRequest, candidate, file, settings)
+                    }.onFailure { error ->
+                        val message = (error.message ?: "Could not return downloaded APK to Morphe.")
+                            .withManualModeHint()
+                        appendLog(message, LogLevel.Error)
+                        uiState = UiState.Error(message)
+                    }
                 }
                 .onFailure { error ->
                     val message = (error.message ?: "Download failed.").withManualModeHint()
@@ -2260,9 +2303,13 @@ class MainActivity : ComponentActivity() {
     private fun returnDownloadedFile(
         request: HelperRequest,
         candidate: DownloadCandidate,
-        file: File
+        file: File,
+        settings: HelperSettings
     ) {
-        val uri = FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.files", file)
+        val uri = when (settings.downloadLocation) {
+            DownloadLocation.TEMPORARY -> FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.files", file)
+            DownloadLocation.DOWNLOADS -> copyToDownloads(file)
+        }
         grantUriPermission(request.callerPackage, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
 
         val result = Intent().apply {
@@ -2277,7 +2324,70 @@ class MainActivity : ComponentActivity() {
 
         setResult(Activity.RESULT_OK, result)
         appendLog("Returned ${file.name} to ${request.callerPackage}.")
+        if (
+            settings.downloadLocation == DownloadLocation.DOWNLOADS ||
+            settings.deleteTemporaryAfterHandoff
+        ) {
+            scheduleTemporaryDelete(file)
+        }
         finish()
+    }
+
+    private fun temporaryDownloadsDir(): File = File(cacheDir, "downloads")
+
+    private fun copyToDownloads(file: File): Uri {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, file.name)
+                put(MediaStore.Downloads.MIME_TYPE, file.mimeType())
+                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/APK Download Helper")
+                put(MediaStore.Downloads.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: error("Could not create a Downloads entry.")
+
+            try {
+                contentResolver.openOutputStream(uri)?.use { output ->
+                    file.inputStream().use { input -> input.copyTo(output) }
+                } ?: error("Could not write to Downloads.")
+
+                values.clear()
+                values.put(MediaStore.Downloads.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+                uri
+            } catch (error: Throwable) {
+                contentResolver.delete(uri, null, null)
+                throw error
+            }
+        } else {
+            val downloadsDir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "APK Download Helper"
+            ).apply { mkdirs() }
+            val output = downloadsDir.uniqueChild(file.name)
+            file.copyTo(output, overwrite = false)
+            FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.files", output)
+        }
+    }
+
+    private fun cleanupTemporaryDownloads(settings: HelperSettings) {
+        if (!settings.deleteTemporaryAfterHandoff) return
+        val cutoff = System.currentTimeMillis() - TEMP_CLEANUP_MAX_AGE_MS
+        temporaryDownloadsDir()
+            .listFiles()
+            ?.filter { it.isFile && it.lastModified() < cutoff }
+            ?.forEach { file -> runCatching { file.delete() } }
+    }
+
+    private fun scheduleTemporaryDelete(file: File) {
+        Thread {
+            Thread.sleep(TEMP_CLEANUP_DELAY_MS)
+            runCatching { file.delete() }
+        }.apply {
+            name = "apk-helper-temp-cleanup"
+            isDaemon = true
+            start()
+        }
     }
 
     private fun validateDownloadedArtifact(
@@ -2331,6 +2441,121 @@ class MainActivity : ComponentActivity() {
                 .withManualModeHint()
         }
     }
+}
+
+private data class HelperSettings(
+    val downloadLocation: DownloadLocation = DownloadLocation.TEMPORARY,
+    val networkPolicy: NetworkPolicy = NetworkPolicy.WIFI_AND_MOBILE,
+    val deleteTemporaryAfterHandoff: Boolean = true
+)
+
+private enum class DownloadLocation(
+    val title: String,
+    val description: String
+) {
+    TEMPORARY(
+        title = "Temporary hand-off",
+        description = "Store downloads in Helper cache and clean them after Morphe has had time to copy them."
+    ),
+    DOWNLOADS(
+        title = "Downloads folder",
+        description = "Keep a visible copy in Downloads/APK Download Helper after validation."
+    )
+}
+
+private enum class NetworkPolicy(
+    val title: String,
+    val description: String
+) {
+    WIFI_ONLY(
+        title = "Wi-Fi only",
+        description = "Check sources and download only on unmetered networks."
+    ),
+    MOBILE_DATA_ONLY(
+        title = "Mobile data only",
+        description = "Use cellular data only and block Wi-Fi source checks."
+    ),
+    WIFI_AND_MOBILE(
+        title = "Wi-Fi and mobile data",
+        description = "Use whichever active network Android provides."
+    );
+
+    fun blockReason(context: Context): String? {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+            ?: return "Network status is unavailable. Change Helper settings or try Manual mode."
+        val activeNetwork = connectivity.activeNetwork
+            ?: return "No active network is available. Connect to an allowed network or use Manual mode."
+        val capabilities = connectivity.getNetworkCapabilities(activeNetwork)
+            ?: return "Network status is unavailable. Change Helper settings or try Manual mode."
+        if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+            return "The active network has no internet access. Connect to another network or use Manual mode."
+        }
+
+        return when (this) {
+            WIFI_ONLY -> if (connectivity.isActiveNetworkMetered) {
+                "Helper is set to Wi-Fi only. Connect to Wi-Fi or change Helper settings."
+            } else {
+                null
+            }
+            MOBILE_DATA_ONLY -> if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                "Helper is set to mobile data only. Switch to mobile data or change Helper settings."
+            } else {
+                null
+            }
+            WIFI_AND_MOBILE -> null
+        }
+    }
+}
+
+private fun Context.loadHelperSettings(): HelperSettings {
+    val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    return HelperSettings(
+        downloadLocation = enumValueOrDefault(
+            prefs.getString("download_location", null),
+            DownloadLocation.TEMPORARY
+        ),
+        networkPolicy = enumValueOrDefault(
+            prefs.getString("network_policy", null),
+            NetworkPolicy.WIFI_AND_MOBILE
+        ),
+        deleteTemporaryAfterHandoff = prefs.getBoolean("delete_temporary_after_handoff", true)
+    )
+}
+
+private fun Context.saveHelperSettings(settings: HelperSettings) {
+    getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString("download_location", settings.downloadLocation.name)
+        .putString("network_policy", settings.networkPolicy.name)
+        .putBoolean("delete_temporary_after_handoff", settings.deleteTemporaryAfterHandoff)
+        .apply()
+}
+
+private inline fun <reified T : Enum<T>> enumValueOrDefault(name: String?, fallback: T): T =
+    name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: fallback
+
+private fun File.mimeType(): String = when (extension.lowercase(Locale.US)) {
+    "apk" -> "application/vnd.android.package-archive"
+    "apks",
+    "apkm",
+    "xapk" -> "application/zip"
+    else -> "application/octet-stream"
+}
+
+private fun File.uniqueChild(fileName: String): File {
+    val safeName = fileName.sanitizeFileName()
+    val base = safeName.substringBeforeLast('.', safeName)
+    val extension = safeName.substringAfterLast('.', "")
+        .takeIf { it != safeName && it.isNotBlank() }
+        ?.let { ".$it" }
+        .orEmpty()
+    var candidate = File(this, safeName)
+    var index = 1
+    while (candidate.exists()) {
+        candidate = File(this, "$base ($index)$extension")
+        index++
+    }
+    return candidate
 }
 
 private object HelperDefaults {
@@ -2463,7 +2688,9 @@ private fun HelperOutlinedButton(
 private fun HelperScreen(
     request: HelperRequest?,
     state: UiState,
+    settings: HelperSettings,
     logs: List<RequestLogEntry>,
+    onSettingsChange: (HelperSettings) -> Unit,
     onRefresh: () -> Unit,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
@@ -2471,6 +2698,7 @@ private fun HelperScreen(
     onCancel: () -> Unit
 ) {
     var showLogs by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -2485,12 +2713,34 @@ private fun HelperScreen(
             verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
         ) {
             item {
-                Text(
-                    text = "APK Download Helper",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "APK Download Helper",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.weight(1f)
+                    )
+                    HelperOutlinedButton(
+                        text = if (showSettings) "Hide settings" else "Settings",
+                        onClick = { showSettings = !showSettings },
+                        icon = Icons.Outlined.Settings,
+                        modifier = Modifier.widthIn(min = 132.dp)
+                    )
+                }
+            }
+
+            if (showSettings) {
+                item {
+                    HelperSettingsCard(
+                        settings = settings,
+                        onSettingsChange = onSettingsChange
+                    )
+                }
             }
 
             if (request == null) {
@@ -2551,6 +2801,158 @@ private fun HelperScreen(
                     ErrorState(message = state.message, onRefresh = onRefresh, onCancel = onCancel)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun HelperSettingsCard(
+    settings: HelperSettings,
+    onSettingsChange: (HelperSettings) -> Unit
+) {
+    HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+        ) {
+            Text(
+                text = "Helper settings",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Version ${BuildConfig.VERSION_NAME}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall
+            )
+
+            SettingsGroupTitle("Download location")
+            DownloadLocation.entries.forEach { location ->
+                SettingsChoiceRow(
+                    title = location.title,
+                    description = location.description,
+                    selected = settings.downloadLocation == location,
+                    onClick = {
+                        onSettingsChange(settings.copy(downloadLocation = location))
+                    }
+                )
+            }
+
+            SettingsGroupTitle("Network access")
+            NetworkPolicy.entries.forEach { policy ->
+                SettingsChoiceRow(
+                    title = policy.title,
+                    description = policy.description,
+                    selected = settings.networkPolicy == policy,
+                    onClick = {
+                        onSettingsChange(settings.copy(networkPolicy = policy))
+                    }
+                )
+            }
+
+            TemporaryCleanupRow(
+                checked = settings.deleteTemporaryAfterHandoff,
+                onCheckedChange = {
+                    onSettingsChange(settings.copy(deleteTemporaryAfterHandoff = it))
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroupTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurface
+    )
+}
+
+@Composable
+private fun SettingsChoiceRow(
+    title: String,
+    description: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .clickable(onClick = onClick),
+        shape = shape,
+        color = if (selected) colors.primary.copy(alpha = 0.18f) else colors.surfaceColorAtElevation(2.dp),
+        contentColor = colors.onSurface,
+        border = BorderStroke(
+            1.dp,
+            if (selected) colors.primary.copy(alpha = 0.54f) else colors.outlineVariant.copy(alpha = 0.45f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(title, fontWeight = FontWeight.Bold)
+                Text(
+                    description,
+                    color = colors.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            if (selected) {
+                HelperChip(text = "Selected", tone = ChipTone.Success)
+            }
+        }
+    }
+}
+
+@Composable
+private fun TemporaryCleanupRow(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text("Clean temporary downloads", fontWeight = FontWeight.Bold)
+                Text(
+                    "Delete staged APKs after hand-off and remove old cache files on launch.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            Switch(
+                checked = checked,
+                onCheckedChange = onCheckedChange
+            )
         }
     }
 }

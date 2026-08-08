@@ -19,6 +19,7 @@ This project is independent from the APK source websites listed below. Source av
 - Validates downloaded files before returning them to Morphe Manager.
 - Falls back to web/manual flows when direct download is not available.
 - Keeps Play Store listing opens separate from Aurora's Play-backed download flow.
+- Includes Helper settings for download location, network access, and temporary APK cleanup.
 
 ## Supported Sources
 
@@ -31,6 +32,16 @@ This project is independent from the APK source websites listed below. Source av
 - Play Store listing
 
 Not every source can provide every requested version or file format. Some sources only expose latest versions, some require manual web interaction, and some split formats may not match the patch request.
+
+## Helper Settings
+
+The helper has its own settings screen:
+
+- **Download location**: use temporary hand-off cache, or keep a validated copy in `Downloads/APK Download Helper`.
+- **Network access**: allow Wi-Fi only, mobile data only, or both Wi-Fi and mobile data.
+- **Temporary cleanup**: remove staged APKs after Morphe has had time to copy them, and clean old cache files on launch.
+
+Temporary hand-off is the default because Morphe Manager copies the returned APK URI into its own private workspace before patching.
 
 ## Intent Contract
 
