@@ -13,8 +13,11 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.util.Log
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
@@ -42,6 +45,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
@@ -127,6 +131,12 @@ private const val TAG = "ApkDownloadHelper"
 private const val PREFS_NAME = "helper_settings"
 private const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
 private const val TEMP_CLEANUP_MAX_AGE_MS = 6 * 60 * 60 * 1000L
+private val APK_PICKER_MIME_TYPES = arrayOf(
+    "application/vnd.android.package-archive",
+    "application/zip",
+    "application/octet-stream",
+    "*/*"
+)
 
 class MainActivity : ComponentActivity() {
     private val browserUserAgent =
@@ -201,6 +211,7 @@ class MainActivity : ComponentActivity() {
                     onRefresh = ::loadCandidates,
                     onResolve = ::resolveCandidates,
                     onDownload = ::downloadAndReturn,
+                    onPickDownloadedFile = ::returnPickedFile,
                     onClearLogs = { requestLogs.clear() },
                     onCancel = {
                         setResult(Activity.RESULT_CANCELED)
@@ -2214,6 +2225,81 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun returnPickedFile(candidate: DownloadCandidate, uri: Uri?) {
+        val activeRequest = request ?: return
+        val settings = helperSettings
+
+        if (uri == null) {
+            appendLog("File selection canceled.", LogLevel.Warning)
+            return
+        }
+
+        appendLog("Checking manually selected file for ${candidate.source.label}.")
+        uiState = UiState.CheckingPickedFile(candidate)
+
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val file = copyPickedFileToTemporary(candidate, uri)
+                    validateDownloadedArtifact(activeRequest, candidate, file)
+                    file
+                }
+            }
+
+            result
+                .onSuccess { file ->
+                    appendLog("Selected file validated: ${file.name} (${file.length()} bytes).")
+                    runCatching {
+                        returnDownloadedFile(activeRequest, candidate, file, settings)
+                    }.onFailure { error ->
+                        val message = (error.message ?: "Could not return selected APK to Morphe.")
+                            .withManualModeHint()
+                        appendLog(message, LogLevel.Error)
+                        uiState = UiState.Error(message)
+                    }
+                }
+                .onFailure { error ->
+                    val message = (error.message ?: "Selected file could not be used.")
+                        .withManualModeHint()
+                    appendLog(message, LogLevel.Error)
+                    uiState = UiState.Error(message)
+                }
+        }
+    }
+
+    private fun copyPickedFileToTemporary(candidate: DownloadCandidate, uri: Uri): File {
+        val displayName = displayNameForUri(uri)
+        val extension = displayName
+            ?.substringAfterLast('.', "")
+            ?.takeIf { it.isNotBlank() && it != displayName }
+            ?: candidate.fileKind.takeUnless { it.equals("web", ignoreCase = true) }
+            ?: request?.requestedFileType
+            ?: "apk"
+        val outputName = displayName
+            ?.takeIf(String::isNotBlank)
+            ?: "${candidate.packageName}-${candidate.versionName ?: "manual"}.$extension"
+        val outputFile = temporaryDownloadsDir().apply { mkdirs() }.uniqueChild(outputName)
+
+        try {
+            val bytesCopied = contentResolver.openInputStream(uri)?.use { input ->
+                outputFile.outputStream().use { output -> input.copyTo(output) }
+            } ?: error("Selected file could not be opened.")
+            check(bytesCopied > 0L) { "Selected file was empty." }
+            return outputFile
+        } catch (error: Throwable) {
+            outputFile.delete()
+            throw error
+        }
+    }
+
+    private fun displayNameForUri(uri: Uri): String? =
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+            }
+            ?.takeIf(String::isNotBlank)
+
     private fun downloadSingleFile(
         candidate: DownloadCandidate,
         downloadFile: CandidateDownloadFile,
@@ -2700,11 +2786,22 @@ private fun HelperScreen(
     onRefresh: () -> Unit,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
+    onPickDownloadedFile: (DownloadCandidate, Uri?) -> Unit,
     onClearLogs: () -> Unit,
     onCancel: () -> Unit
 ) {
     var showLogs by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var pendingFilePick by remember { mutableStateOf<DownloadCandidate?>(null) }
+    val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val candidate = pendingFilePick
+        pendingFilePick = null
+        candidate?.let { onPickDownloadedFile(it, uri) }
+    }
+    val openDownloadedFilePicker: (DownloadCandidate) -> Unit = { candidate ->
+        pendingFilePick = candidate
+        filePickerLauncher.launch(APK_PICKER_MIME_TYPES)
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -2797,11 +2894,13 @@ private fun HelperScreen(
                             request = request,
                             result = state.result,
                             onResolve = onResolve,
-                            onDownload = onDownload
+                            onDownload = onDownload,
+                            onPickDownloadedFile = openDownloadedFilePicker
                         )
                     }
                 }
 
+                is UiState.CheckingPickedFile -> item { CheckingPickedFileState(state) }
                 is UiState.Downloading -> item { DownloadingState(state) }
                 is UiState.Error -> item {
                     ErrorState(message = state.message, onRefresh = onRefresh, onCancel = onCancel)
@@ -3036,7 +3135,8 @@ private fun SourceTabs(
     request: HelperRequest,
     result: CandidateResult,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
-    onDownload: (DownloadCandidate) -> Unit
+    onDownload: (DownloadCandidate) -> Unit,
+    onPickDownloadedFile: (DownloadCandidate) -> Unit
 ) {
     val groups = result.sourceGroups
 
@@ -3083,7 +3183,8 @@ private fun SourceTabs(
                     CandidateCard(
                         request = request,
                         candidate = candidate,
-                        onDownload = { onDownload(candidate) }
+                        onDownload = { onDownload(candidate) },
+                        onPickDownloadedFile = { onPickDownloadedFile(candidate) }
                     )
                 }
             }
@@ -3107,7 +3208,8 @@ private fun SourceTabs(
                             onResolve = {
                                 onResolve(selectedGroup.source, CandidateOption.REQUESTED)
                             },
-                            onDownload = onDownload
+                            onDownload = onDownload,
+                            onPickDownloadedFile = onPickDownloadedFile
                         )
                     }
                 }
@@ -3123,7 +3225,8 @@ private fun SourceTabs(
                 onResolve = {
                     onResolve(selectedGroup.source, CandidateOption.LATEST)
                 },
-                onDownload = onDownload
+                onDownload = onDownload,
+                onPickDownloadedFile = onPickDownloadedFile
             )
         }
     }
@@ -3137,7 +3240,8 @@ private fun CandidateResolveSection(
     loadingText: String,
     emptyText: String,
     onResolve: () -> Unit,
-    onDownload: (DownloadCandidate) -> Unit
+    onDownload: (DownloadCandidate) -> Unit,
+    onPickDownloadedFile: (DownloadCandidate) -> Unit
 ) {
     when (state) {
         ResolveState.Idle -> {
@@ -3172,7 +3276,8 @@ private fun CandidateResolveSection(
                     CandidateCard(
                         request = request,
                         candidate = candidate,
-                        onDownload = { onDownload(candidate) }
+                        onDownload = { onDownload(candidate) },
+                        onPickDownloadedFile = { onPickDownloadedFile(candidate) }
                     )
                 }
             }
@@ -3323,7 +3428,8 @@ private fun RequestLogsCard(
 private fun CandidateCard(
     request: HelperRequest,
     candidate: DownloadCandidate,
-    onDownload: () -> Unit
+    onDownload: () -> Unit,
+    onPickDownloadedFile: () -> Unit
 ) {
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
@@ -3366,6 +3472,14 @@ private fun CandidateCard(
                     icon = Icons.Outlined.OpenInBrowser,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (candidate.source.supportsManualArtifactPicker) {
+                    HelperButton(
+                        text = "Select downloaded file",
+                        onClick = onPickDownloadedFile,
+                        icon = Icons.Outlined.FolderOpen,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
     }
@@ -3489,6 +3603,29 @@ private enum class ChipTone {
     Neutral,
     Success,
     Error
+}
+
+@Composable
+private fun CheckingPickedFileState(state: UiState.CheckingPickedFile) {
+    HelperCard {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Checking selected file")
+                Text(
+                    text = state.candidate.source.label,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -3898,14 +4035,18 @@ private data class DownloadedApkMetadata(
     val versionCode: Long?
 )
 
-private enum class DownloadSource(val label: String, val sortIndex: Int) {
+private enum class DownloadSource(
+    val label: String,
+    val sortIndex: Int,
+    val supportsManualArtifactPicker: Boolean = true
+) {
     APK_MIRROR("APKMirror", 0),
     UPTODOWN("Uptodown", 1),
     APK_PURE("APKPure", 2),
     APK_COMBO("APKCombo", 3),
     APTOIDE("Aptoide", 4),
-    AURORA("Aurora", 5),
-    PLAY("Play", 6)
+    AURORA("Aurora", 5, supportsManualArtifactPicker = false),
+    PLAY("Play", 6, supportsManualArtifactPicker = false)
 }
 
 private enum class CandidateOption {
@@ -3950,6 +4091,7 @@ private sealed interface UiState {
     data object Idle : UiState
     data object Loading : UiState
     data class Ready(val result: CandidateResult) : UiState
+    data class CheckingPickedFile(val candidate: DownloadCandidate) : UiState
     data class Downloading(val candidate: DownloadCandidate, val percent: Int) : UiState
     data class Error(val message: String) : UiState
 }
