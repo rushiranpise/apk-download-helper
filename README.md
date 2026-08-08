@@ -1,7 +1,7 @@
 # APK Download Helper
 
 <p align="center">
-  <img src="https://github.com/user-attachments/assets/4f0b4262-3bfe-4ff0-b001-9a56f77a541a" alt="APK Download Helper for Morphe" width="180" />
+  <img src="docs/logo.png" alt="APK Download Helper for Morphe" width="180" />
 </p>
 
 APK Download Helper is a standalone Android helper app for finding and returning original APK files requested by Morphe Manager.
