@@ -1,15 +1,43 @@
+import org.gradle.api.GradleException
+import org.gradle.api.provider.Provider
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) {
+        file.inputStream().use(::load)
+    }
+}
+
+fun stringProperty(name: String): Provider<String> =
+    providers.gradleProperty(name)
+        .orElse(providers.environmentVariable(name))
+        .orElse(providers.provider { localProperties.getProperty(name) })
+
+fun Provider<String>.hasValue(): Boolean = orNull?.isNotBlank() == true
+
 val helperVersionName = providers.gradleProperty("helperVersionName")
     .orElse(providers.environmentVariable("HELPER_VERSION_NAME"))
 val helperVersionCode = providers.gradleProperty("helperVersionCode")
     .orElse(providers.environmentVariable("HELPER_VERSION_CODE"))
     .map(String::toInt)
+
+val releaseStoreFile = stringProperty("HELPER_RELEASE_STORE_FILE")
+val releaseStorePassword = stringProperty("HELPER_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = stringProperty("HELPER_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = stringProperty("HELPER_RELEASE_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { it.hasValue() }
 
 android {
     namespace = "dev.rushi.apkdownloadhelper"
@@ -23,11 +51,22 @@ android {
         versionName = helperVersionName.get()
     }
 
+    val releaseSigningConfig = signingConfigs.create("release") {
+        if (hasReleaseSigning) {
+            storeFile = rootProject.file(releaseStoreFile.get())
+            storePassword = releaseStorePassword.get()
+            keyAlias = releaseKeyAlias.get()
+            keyPassword = releaseKeyPassword.get()
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            signingConfig = signingConfigs.getByName("debug")
+            if (hasReleaseSigning) {
+                signingConfig = releaseSigningConfig
+            }
         }
     }
 
@@ -45,6 +84,16 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+}
+
+gradle.taskGraph.whenReady {
+    val releaseTaskRequested = allTasks.any { it.name.contains("Release", ignoreCase = true) }
+    if (releaseTaskRequested && !hasReleaseSigning) {
+        throw GradleException(
+            "Release signing is required. Provide HELPER_RELEASE_STORE_FILE, " +
+                "HELPER_RELEASE_STORE_PASSWORD, HELPER_RELEASE_KEY_ALIAS, and HELPER_RELEASE_KEY_PASSWORD.",
+        )
     }
 }
 

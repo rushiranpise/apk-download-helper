@@ -5,6 +5,8 @@ local.properties
 **/build/
 *.iml
 *.hprof
+*.jks
+*.keystore
 reports/
 __pycache__/
 *.pyc

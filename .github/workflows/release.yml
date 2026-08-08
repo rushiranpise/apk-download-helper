@@ -72,7 +72,43 @@ jobs:
         shell: bash
         run: git checkout --force "${{ steps.release_tag.outputs.tag }}"
 
+      - name: Decode release keystore
+        id: signing
+        env:
+          HELPER_RELEASE_KEYSTORE_BASE64: ${{ secrets.HELPER_RELEASE_KEYSTORE_BASE64 }}
+          HELPER_RELEASE_STORE_PASSWORD: ${{ secrets.HELPER_RELEASE_STORE_PASSWORD }}
+          HELPER_RELEASE_KEY_ALIAS: ${{ secrets.HELPER_RELEASE_KEY_ALIAS }}
+          HELPER_RELEASE_KEY_PASSWORD: ${{ secrets.HELPER_RELEASE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          missing=0
+          for name in \
+            HELPER_RELEASE_KEYSTORE_BASE64 \
+            HELPER_RELEASE_STORE_PASSWORD \
+            HELPER_RELEASE_KEY_ALIAS \
+            HELPER_RELEASE_KEY_PASSWORD
+          do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing repository secret: ${name}"
+              missing=1
+            fi
+          done
+
+          if [[ "$missing" -ne 0 ]]; then
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/signing"
+          store_file="$RUNNER_TEMP/signing/helper-release.jks"
+          printf '%s' "$HELPER_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$store_file"
+          echo "store_file=$store_file" >> "$GITHUB_OUTPUT"
+
       - name: Build release APK
+        env:
+          HELPER_RELEASE_STORE_FILE: ${{ steps.signing.outputs.store_file }}
+          HELPER_RELEASE_STORE_PASSWORD: ${{ secrets.HELPER_RELEASE_STORE_PASSWORD }}
+          HELPER_RELEASE_KEY_ALIAS: ${{ secrets.HELPER_RELEASE_KEY_ALIAS }}
+          HELPER_RELEASE_KEY_PASSWORD: ${{ secrets.HELPER_RELEASE_KEY_PASSWORD }}
         shell: bash
         run: |
           chmod +x ./gradlew

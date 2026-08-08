@@ -43,6 +43,19 @@ The helper has its own settings screen:
 
 Temporary hand-off is the default because Morphe Manager copies the returned APK URI into its own private workspace before patching.
 
+## Release Signing
+
+Release APKs must be signed with a private release certificate. Debug signing is only for local test builds and must not be used for public releases.
+
+GitHub Actions expects these repository secrets:
+
+- `HELPER_RELEASE_KEYSTORE_BASE64`: base64-encoded release keystore
+- `HELPER_RELEASE_STORE_PASSWORD`
+- `HELPER_RELEASE_KEY_ALIAS`
+- `HELPER_RELEASE_KEY_PASSWORD`
+
+For local release builds, place the same values in `local.properties` or pass them as Gradle properties/environment variables. Do not commit keystores or signing passwords.
+
 ## Source Audit Script
 
 Use `tools/audit_helper_sources.py` to test source availability for every app declared in a Morphe `Constants.kt` file without launching the Android app:
