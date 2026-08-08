@@ -394,7 +394,7 @@ class MainActivity : ComponentActivity() {
     ): List<DownloadCandidate> = when (source) {
         DownloadSource.APK_MIRROR -> when (option) {
             CandidateOption.REQUESTED -> findApkMirrorRequested(request)
-            CandidateOption.LATEST -> listOf(apkMirrorLatest(request))
+            CandidateOption.LATEST -> findApkMirrorLatest(request)
             CandidateOption.MANUAL -> emptyList()
         }
         DownloadSource.UPTODOWN -> findUptodown(request, option)
@@ -468,12 +468,38 @@ class MainActivity : ComponentActivity() {
         formatMatches = true
     )
 
-    private fun apkMirrorLatest(request: HelperRequest): DownloadCandidate {
+    private fun apkMirrorLatest(request: HelperRequest): DownloadCandidate =
+        apkMirrorLatestWebCandidate(request, runCatching {
+            resolveApkMirrorLatestInfo(request, apkMirrorPackageSearchUrl(request.packageName))
+        }.getOrNull())
+
+    private fun findApkMirrorLatest(request: HelperRequest): List<DownloadCandidate> {
         val searchUrl = apkMirrorPackageSearchUrl(request.packageName)
         val latestInfo = runCatching { resolveApkMirrorLatestInfo(request, searchUrl) }
             .onFailure { Log.w(TAG, "APKMirror latest resolve failed", it) }
             .getOrNull()
 
+        val latestReleaseUrl = latestInfo
+            ?.openUrl
+            ?.takeIf(::apkMirrorLooksLikeReleaseUrl)
+        val directCandidate = latestReleaseUrl?.let { releaseUrl ->
+            apkMirrorCandidateFromReleaseUrl(
+                request = request,
+                releaseUrl = releaseUrl,
+                versionName = latestInfo.versionName ?: apkMirrorVersionFromReleaseUrl(releaseUrl),
+                option = CandidateOption.LATEST
+            )
+        }
+
+        return listOfNotNull(directCandidate)
+            .ifEmpty { listOf(apkMirrorLatestWebCandidate(request, latestInfo)) }
+    }
+
+    private fun apkMirrorLatestWebCandidate(
+        request: HelperRequest,
+        latestInfo: ApkMirrorLatestInfo?
+    ): DownloadCandidate {
+        val searchUrl = apkMirrorPackageSearchUrl(request.packageName)
         return DownloadCandidate(
             source = DownloadSource.APK_MIRROR,
             name = request.appName,
