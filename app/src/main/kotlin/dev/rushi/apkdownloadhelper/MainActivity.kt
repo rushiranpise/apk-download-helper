@@ -133,6 +133,11 @@ private const val TAG = "ApkDownloadHelper"
 private const val PREFS_NAME = "helper_settings"
 private const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
 private const val TEMP_CLEANUP_MAX_AGE_MS = 6 * 60 * 60 * 1000L
+private val DOWNLOAD_FILE_KIND_ORDER = listOf("apk", "apkm", "apks", "xapk")
+private val APK_COMBO_FILE_KIND_ORDER = listOf("apk", "xapk", "apks")
+private val DOWNLOAD_FILE_KIND_SET = DOWNLOAD_FILE_KIND_ORDER.toSet()
+private val SPLIT_ARCHIVE_FILE_KINDS = setOf("apkm", "apks", "xapk")
+private val DOWNLOAD_FILE_KIND_REGEX = Regex("""apkm|apks|xapk|apk""", RegexOption.IGNORE_CASE)
 private val APK_PICKER_MIME_TYPES = arrayOf(
     "application/vnd.android.package-archive",
     "application/zip",
@@ -514,7 +519,8 @@ class MainActivity : ComponentActivity() {
             apkMirrorCandidatesFromReleaseUrl(
                 request = request,
                 releaseUrl = releaseUrl,
-                versionName = request.versionName ?: apkMirrorVersionFromReleaseUrl(releaseUrl),
+                versionName = request.requestedVersionNames.firstOrNull()
+                    ?: apkMirrorVersionFromReleaseUrl(releaseUrl),
                 option = CandidateOption.REQUESTED
             )
         }
@@ -977,16 +983,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun apkMirrorWantedVariantKinds(request: HelperRequest): List<String> {
-        val requested = request.requestedFileType?.lowercase(Locale.US)
-        return when {
-            requested == null -> listOf("apk", "apkm", "apks", "xapk")
-            requested.contains("apk") && !request.allowSplitArchive -> listOf("apk")
-            requested.contains("apkm") -> listOf("apkm")
-            requested.contains("apks") -> listOf("apks")
-            requested.contains("xapk") -> listOf("xapk")
-            request.allowSplitArchive -> listOf("apk", "apkm", "apks", "xapk")
-            else -> listOf("apk", "apkm", "apks", "xapk")
-        }
+        val requestedKinds = request.requestedFileKinds
+        return DOWNLOAD_FILE_KIND_ORDER
+            .filter { it in requestedKinds }
+            .ifEmpty { DOWNLOAD_FILE_KIND_ORDER }
     }
 
     private fun apkMirrorVariantFileKind(type: String): String {
@@ -1256,15 +1256,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun apkComboWantedSuffixes(request: HelperRequest): List<String> {
-        val requested = request.requestedFileType?.lowercase(Locale.US)
-        return when {
-            requested == null -> listOf("apk", "xapk", "apks")
-            requested.contains("apk") && !request.allowSplitArchive -> listOf("apk")
-            requested.contains("xapk") -> listOf("xapk", "apk")
-            requested.contains("apks") -> listOf("apks", "xapk", "apk")
-            request.allowSplitArchive -> listOf("apk", "xapk", "apks")
-            else -> listOf("apk", "xapk", "apks")
-        }
+        val requestedKinds = request.requestedFileKinds
+        return APK_COMBO_FILE_KIND_ORDER
+            .filter { it in requestedKinds }
+            .ifEmpty { APK_COMBO_FILE_KIND_ORDER }
     }
 
     private fun apkComboOldVersionPageUrl(
@@ -2019,10 +2014,16 @@ class MainActivity : ComponentActivity() {
                 element.attr("data-dt-package_name").equals(request.packageName, ignoreCase = true) &&
                     request.matchesRequestedVersion(versionName, versionCode)
             }
-            ?: return null
+        if (item == null) {
+            return apkPureRequestedCandidateFromVersionsPage(request, appPageUrl)
+        }
 
-        val versionName = item.attr("data-dt-version").takeIf(String::isNotBlank) ?: request.versionName
+        val versionName = item.attr("data-dt-version").takeIf(String::isNotBlank)
+            ?.withoutTrailingVersionCode()
+            ?: request.requestedVersionName
         val versionCode = item.attr("data-dt-version_code").toLongOrNull()
+            ?: item.attr("data-dt-versioncode").toLongOrNull()
+            ?: item.attr("data-dt-version").trailingVersionCode()
         val versionPageUrl = item.selectFirst("a.go-version-btn[href], a.dt-version-name-link[href]")
             ?.absUrl("href")
             ?.normalizedHttpUrlOrNull()
@@ -2055,6 +2056,77 @@ class MainActivity : ComponentActivity() {
             formatMatches = request.acceptsFormat(fileKind)
         )
     }
+
+    private fun apkPureRequestedCandidateFromVersionsPage(
+        request: HelperRequest,
+        appPageUrl: String
+    ): DownloadCandidate? {
+        val versionsDoc = fetchDocument("$appPageUrl/versions", referer = appPageUrl)
+        val entry = apkPureVersionEntries(versionsDoc, request)
+            .firstOrNull { request.matchesRequestedVersion(it.versionName, it.versionCode) }
+            ?: return null
+
+        apkPureCandidateFromDownloadPage(
+            request = request,
+            appPageUrl = appPageUrl,
+            downloadPageUrl = entry.downloadPageUrl,
+            versionName = entry.versionName,
+            versionCode = entry.versionCode,
+            option = CandidateOption.REQUESTED
+        )?.let { return it }
+
+        return DownloadCandidate(
+            source = DownloadSource.APK_PURE,
+            name = request.appName,
+            packageName = request.packageName,
+            versionName = entry.versionName,
+            versionCode = entry.versionCode,
+            url = entry.downloadPageUrl,
+            fileKind = entry.fileKind,
+            option = CandidateOption.REQUESTED,
+            directDownload = false,
+            versionStatus = request.versionStatus(entry.versionName, entry.versionCode),
+            formatMatches = request.acceptsFormat(entry.fileKind)
+        )
+    }
+
+    private fun apkPureVersionEntries(doc: Document, request: HelperRequest): List<ApkPureVersionEntry> =
+        doc.select(".ver_download_link[data-dt-version]")
+            .mapNotNull { item ->
+                val rawVersion = item.attr("data-dt-version").takeIf(String::isNotBlank)
+                    ?: sourceVersionFromText(item.text())
+                val versionName = rawVersion
+                    ?.withoutTrailingVersionCode()
+                    ?.takeIf(String::isNotBlank)
+                val versionCode = item.attr("data-dt-versioncode").toLongOrNull()
+                    ?: item.attr("data-dt-version_code").toLongOrNull()
+                    ?: rawVersion?.trailingVersionCode()
+                val downloadPageUrl = item
+                    .selectFirst("a.dt-version-name-link[href], a[href*=/download/][href]")
+                    ?.absUrl("href")
+                    ?.normalizedHttpUrlOrNull()
+                    ?: return@mapNotNull null
+                val tags = buildList {
+                    addAll(item.select("[data-tag]").map { it.attr("data-tag") })
+                    addAll(item.select(".tag, .apk-type-tag-list *").map { it.text() })
+                    apkPureFileKindFromApkId(item.attr("data-dt-apkid"))?.let(::add)
+                }
+                val fileKind = fileKindFromTags(tags, request).takeUnless { it == "web" }
+                    ?: fileKindFromUrl(downloadPageUrl)
+
+                ApkPureVersionEntry(
+                    versionName = versionName,
+                    versionCode = versionCode,
+                    downloadPageUrl = downloadPageUrl,
+                    fileKind = fileKind
+                )
+            }
+
+    private fun apkPureFileKindFromApkId(apkId: String): String? =
+        apkId.substringAfter("b/", "")
+            .substringBefore("/")
+            .lowercase(Locale.US)
+            .takeIf { it in DOWNLOAD_FILE_KIND_SET }
 
     private fun apkPureDownloadingUrl(appPageUrl: String, versionName: String?): String =
         if (versionName.isNullOrBlank()) {
@@ -2460,7 +2532,7 @@ class MainActivity : ComponentActivity() {
             ?.substringAfterLast('.', "")
             ?.takeIf { it.isNotBlank() && it != displayName }
             ?: candidate.fileKind.takeUnless { it.equals("web", ignoreCase = true) }
-            ?: request?.requestedFileType
+            ?: request?.requestedFileKinds?.orderedFileKinds()?.firstOrNull()
             ?: "apk"
         val outputName = displayName
             ?.takeIf(String::isNotBlank)
@@ -3332,7 +3404,7 @@ private fun AppInfoCard(request: HelperRequest) {
             )
             AppInfoRow(label = "App name", value = request.appName)
             AppInfoRow(label = "Package name", value = request.packageName)
-            AppInfoRow(label = "Version", value = request.versionName ?: "Any compatible")
+            AppInfoRow(label = "Version", value = request.requestedVersionName ?: "Any compatible")
             AppInfoRow(label = "Version code", value = request.versionCodeSummary ?: "Any")
             AppInfoRow(label = "Format", value = request.requestedFormatLabel)
             AppInfoRow(label = "Device ABI", value = request.abiSummary)
@@ -3951,52 +4023,61 @@ private data class HelperRequest(
             .mapNotNull { it.trim().takeIf(String::isNotBlank) }
             .distinct()
 
+    val requestedVersionName: String?
+        get() = versionName
+            ?.withoutTrailingVersionCode()
+            ?.takeIf(String::isNotBlank)
+
+    val embeddedVersionCode: Long?
+        get() = versionName?.trailingVersionCode()
+
     val abiSummary: String
         get() = availableAbis.joinToString().ifBlank { "Default" }
 
+    val requestedFileKinds: Set<String>
+        get() = requestedFileKindsFrom(requestedFileType, allowSplitArchive)
+
     val requestedFormatLabel: String
-        get() = requestedFileType
-            ?.substringAfterLast('.')
-            ?.replace('_', ' ')
-            ?.uppercase()
-            ?: if (allowSplitArchive) "APK/APKS/XAPK" else "APK"
+        get() = requestedFileKinds
+            .orderedFileKinds()
+            .joinToString("/") { it.uppercase(Locale.US) }
 
     val versionCodeSummary: String?
         get() = when {
-            versionCodes.isEmpty() && versionCode == null -> null
-            versionCodes.isEmpty() -> versionCode.toString()
-            versionCodes.size == 1 -> versionCodes.first().toString()
-            else -> versionCodes.joinToString(limit = 3, truncated = "+${versionCodes.size - 3} more")
+            requestedVersionCodes.isEmpty() -> null
+            requestedVersionCodes.size == 1 -> requestedVersionCodes.first().toString()
+            else -> requestedVersionCodes.joinToString(limit = 3, truncated = "+${requestedVersionCodes.size - 3} more")
         }
 
     val requestedVersionCodes: Set<Long>
         get() = buildSet {
             versionCode?.takeIf { it > 0L }?.let(::add)
+            embeddedVersionCode?.takeIf { it > 0L }?.let(::add)
             addAll(versionCodes.filter { it > 0L })
         }
 
     val knownVersionNames: List<String>
-        get() = (listOfNotNull(versionName) + compatibleVersionNames)
+        get() = (listOfNotNull(requestedVersionName) + compatibleVersionNames.map { it.withoutTrailingVersionCode() })
             .mapNotNull { it.trim().takeIf(String::isNotBlank) }
             .distinctBy { it.normalizedVersionName() }
 
     val requestedVersionNames: List<String>
-        get() = listOfNotNull(versionName)
+        get() = listOfNotNull(requestedVersionName)
             .mapNotNull { it.trim().takeIf(String::isNotBlank) }
             .distinctBy { it.normalizedVersionName() }
 
     val hasRequestedVersionRequest: Boolean
-        get() = versionName != null || requestedVersionCodes.isNotEmpty()
+        get() = requestedVersionName != null || requestedVersionCodes.isNotEmpty()
 
     val hasKnownVersionRequest: Boolean
-        get() = versionName != null ||
+        get() = requestedVersionName != null ||
             requestedVersionCodes.isNotEmpty() ||
             compatibleVersionNames.isNotEmpty() ||
             compatibleVersionCodes.any { it > 0L }
 
     val requestedVersionLabel: String
         get() = listOfNotNull(
-            versionName,
+            requestedVersionName,
             versionCodeSummary?.let { "build $it" }
         ).joinToString(" ").ifBlank { "any compatible version" }
 
@@ -4007,7 +4088,7 @@ private data class HelperRequest(
         if (matchesRequestedVersion(candidateVersionName, candidateVersionCode)) return VersionStatus.REQUESTED
 
         val compatibleName = candidateVersionName != null &&
-            compatibleVersionNames.any { candidateVersionName.versionNameEquals(it) }
+            compatibleVersionNames.any { candidateVersionName.versionNameEquals(it.withoutTrailingVersionCode()) }
         val compatibleCode = candidateVersionCode != null &&
             candidateVersionCode > 0L &&
             candidateVersionCode in compatibleVersionCodes
@@ -4015,17 +4096,8 @@ private data class HelperRequest(
     }
 
     fun acceptsFormat(fileKind: String): Boolean {
-        val kind = fileKind.lowercase()
-        val requested = requestedFileType?.lowercase()
-        return when {
-            requested == null -> true
-            requested.contains("xapk") -> kind == "xapk"
-            requested.contains("apks") -> kind == "apks"
-            requested.contains("apkm") -> kind == "apkm"
-            requested.contains("apk") && !allowSplitArchive -> kind == "apk"
-            allowSplitArchive -> kind in setOf("apk", "apks", "apkm", "xapk")
-            else -> true
-        }
+        val kind = fileKind.lowercase(Locale.US)
+        return kind in requestedFileKinds
     }
 
     fun matchesKnownVersion(candidateVersionName: String?, candidateVersionCode: Long?): Boolean =
@@ -4035,7 +4107,7 @@ private data class HelperRequest(
             matchesRequestedVersion(candidateVersionName, candidateVersionCode) ||
                 (
                     candidateVersionName != null &&
-                        compatibleVersionNames.any { candidateVersionName.versionNameEquals(it) }
+                        compatibleVersionNames.any { candidateVersionName.versionNameEquals(it.withoutTrailingVersionCode()) }
                     ) ||
                 (
                     candidateVersionCode != null &&
@@ -4048,7 +4120,7 @@ private data class HelperRequest(
         val requestedCodes = requestedVersionCodes
         if (versionName == null && requestedCodes.isEmpty()) return false
 
-        val nameMatches = versionName != null && candidateVersionName.versionNameEquals(versionName)
+        val nameMatches = requestedVersionName != null && candidateVersionName.versionNameEquals(requestedVersionName)
         val codeMatches = requestedCodes.isNotEmpty() &&
             candidateVersionCode != null &&
             candidateVersionCode > 0L &&
@@ -4433,6 +4505,13 @@ private data class ApkPureAsset(
     val url: String = ""
 )
 
+private data class ApkPureVersionEntry(
+    val versionName: String?,
+    val versionCode: Long?,
+    val downloadPageUrl: String,
+    val fileKind: String
+)
+
 private data class ApkPureDeviceHeader(
     val device_info: ApkPureDeviceInfo = ApkPureDeviceInfo()
 )
@@ -4543,13 +4622,9 @@ private fun playStoreUrl(packageName: String): String =
 private fun fileKindFromTags(tags: List<String>, request: HelperRequest): String {
     val available = tags
         .map { it.trim().lowercase(Locale.US) }
-        .filter { it in setOf("apk", "apks", "apkm", "xapk") }
+        .filter { it in DOWNLOAD_FILE_KIND_SET }
         .distinct()
-    val requested = request.requestedFileType
-        ?.lowercase(Locale.US)
-        ?.let { requested ->
-            available.firstOrNull { requested.contains(it) }
-        }
+    val requested = available.firstOrNull { it in request.requestedFileKinds }
 
     return requested
         ?: available.firstOrNull { request.acceptsFormat(it) }
@@ -4706,8 +4781,20 @@ private fun String?.versionNameEquals(other: String?): Boolean {
     return leftParts.isNotEmpty() && leftParts == rightParts
 }
 
+private fun String.withoutTrailingVersionCode(): String =
+    replace(Regex("""\s*\(\s*\d+\s*\)\s*$"""), "")
+        .trim()
+
+private fun String.trailingVersionCode(): Long? =
+    Regex("""\(\s*(\d+)\s*\)\s*$""")
+        .find(this)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toLongOrNull()
+
 private fun String.normalizedVersionName(): String =
-    lowercase(Locale.US)
+    withoutTrailingVersionCode()
+        .lowercase(Locale.US)
         .replace(Regex("""\b(version|ver|v|release|stable|apk|xapk|apkm|apks|bundle)\b"""), " ")
         .replace(Regex("""[^\p{Alnum}]+"""), ".")
         .trim('.')
@@ -4747,6 +4834,33 @@ private fun String.versionNumberParts(): List<Int> =
         .findAll(this)
         .mapNotNull { it.value.toIntOrNull() }
         .toList()
+
+private fun requestedFileKindsFrom(rawFileType: String?, allowSplitArchive: Boolean): Set<String> {
+    val normalized = rawFileType?.lowercase(Locale.US).orEmpty()
+    val explicitKinds = DOWNLOAD_FILE_KIND_REGEX
+        .findAll(normalized)
+        .map { it.value.lowercase(Locale.US) }
+        .toMutableSet()
+    if (explicitKinds.isEmpty() && "package-archive" in normalized) {
+        explicitKinds.add("apk")
+    }
+
+    if (explicitKinds.isEmpty()) {
+        return if (allowSplitArchive) DOWNLOAD_FILE_KIND_SET else setOf("apk")
+    }
+
+    if (allowSplitArchive && "apk" in explicitKinds) {
+        explicitKinds.addAll(SPLIT_ARCHIVE_FILE_KINDS)
+    }
+
+    return explicitKinds
+}
+
+private fun Collection<String>.orderedFileKinds(): List<String> {
+    val knownKinds = DOWNLOAD_FILE_KIND_ORDER.filter { it in this }
+    val extraKinds = filter { it !in DOWNLOAD_FILE_KIND_SET }.distinct()
+    return knownKinds + extraKinds
+}
 
 private fun String?.variantFileSuffix(): String =
     this
