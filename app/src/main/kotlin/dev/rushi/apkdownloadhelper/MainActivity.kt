@@ -3437,6 +3437,7 @@ private fun CandidateCard(
     val hasResolvedCandidateInfo = candidate.versionName != null ||
         candidate.versionCode != null ||
         !candidate.fileKind.equals("web", ignoreCase = true)
+    var hasOpenedLink by remember(candidate.identityKey()) { mutableStateOf(false) }
 
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
@@ -3468,11 +3469,12 @@ private fun CandidateCard(
                         } else {
                             uriHandler.openUri(candidate.url)
                         }
+                        hasOpenedLink = true
                     },
                     icon = Icons.Outlined.OpenInBrowser,
                     modifier = Modifier.fillMaxWidth()
                 )
-                if (candidate.source.supportsManualArtifactPicker) {
+                if (candidate.source.supportsManualArtifactPicker && hasOpenedLink) {
                     HelperButton(
                         text = "Select downloaded file",
                         onClick = onPickDownloadedFile,
