@@ -15,6 +15,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -44,6 +45,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.OpenInBrowser
@@ -186,6 +188,7 @@ class MainActivity : ComponentActivity() {
         .create(AptoideApi::class.java)
 
     private var request by mutableStateOf<HelperRequest?>(null)
+    private var selectedAbi by mutableStateOf<String?>(null)
     private var uiState by mutableStateOf<UiState>(UiState.Idle)
     private var helperSettings by mutableStateOf(HelperSettings())
     private val requestLogs = mutableStateListOf<RequestLogEntry>()
@@ -204,10 +207,12 @@ class MainActivity : ComponentActivity() {
             HelperTheme {
                 HelperScreen(
                     request = request,
+                    selectedAbi = selectedAbi,
                     state = uiState,
                     settings = helperSettings,
                     logs = requestLogs,
                     onSettingsChange = ::updateHelperSettings,
+                    onSelectedAbiChange = ::selectPreferredAbi,
                     onRefresh = ::loadCandidates,
                     onResolve = ::resolveCandidates,
                     onDownload = ::downloadAndReturn,
@@ -227,6 +232,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        selectedAbi = null
         request = HelperRequest.from(intent)
         startRequestLog(request)
         if (request != null) {
@@ -237,13 +243,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadCandidates() {
-        val activeRequest = request ?: return
+        val activeRequest = effectiveRequest() ?: return
         uiState = UiState.Ready(initialCandidateResult(activeRequest))
         appendLog("Ready. Manual links prepared for ${DownloadSource.entries.size} sources.")
     }
 
     private fun resolveCandidates(source: DownloadSource, option: CandidateOption) {
-        val activeRequest = request ?: return
+        val activeRequest = effectiveRequest() ?: return
         helperSettings.networkPolicy.blockReason(this)?.let { message ->
             appendLog(message, LogLevel.Warning)
             updateResolveState(source, option, ResolveState.Error(message))
@@ -273,9 +279,23 @@ class MainActivity : ComponentActivity() {
         option: CandidateOption,
         state: ResolveState
     ) {
-        val activeRequest = request ?: return
+        val activeRequest = effectiveRequest() ?: return
         val current = (uiState as? UiState.Ready)?.result ?: initialCandidateResult(activeRequest)
         uiState = UiState.Ready(current.withResolveState(source, option, state))
+    }
+
+    private fun effectiveRequest(): HelperRequest? =
+        request?.withPreferredAbi(selectedAbi)
+
+    private fun selectPreferredAbi(abi: String?) {
+        val activeRequest = request ?: return
+        selectedAbi = abi?.takeIf { it in activeRequest.availableAbis }
+        uiState = UiState.Ready(initialCandidateResult(activeRequest.withPreferredAbi(selectedAbi)))
+        appendLog(
+            selectedAbi
+                ?.let { "Preferred ABI set to $it." }
+                ?: "Preferred ABI set to Auto."
+        )
     }
 
     private fun startRequestLog(request: HelperRequest?) {
@@ -883,7 +903,6 @@ class MainActivity : ComponentActivity() {
         val acceptedVariants = variants.filter { request.acceptsFormat(it.fileKind) }
         return acceptedVariants.firstOrNull { sourceArchMatches(it.arch, request) && apkMirrorDpiMatches(it.dpi) }
             ?: acceptedVariants.firstOrNull { sourceArchMatches(it.arch, request) }
-            ?: acceptedVariants.firstOrNull()
     }
 
     private fun apkMirrorVariantFromRow(row: Element): ApkMirrorVariant? {
@@ -1622,8 +1641,6 @@ class MainActivity : ComponentActivity() {
 
         return archMatches.firstOrNull { request.acceptsFormat(it.fileKind) }
             ?: archMatches.firstOrNull()
-            ?: variants.firstOrNull { request.acceptsFormat(it.fileKind) }
-            ?: variants.firstOrNull()
     }
 
     private fun uptodownVariantFiles(doc: Document): List<UptodownVariantFile> {
@@ -1671,8 +1688,7 @@ class MainActivity : ComponentActivity() {
             return true
         }
 
-        val supportedAbis = request.supportedAbis.ifEmpty { Build.SUPPORTED_ABIS.toList() }
-            .map { it.lowercase(Locale.US) }
+        val supportedAbis = request.availableAbis.map { it.lowercase(Locale.US) }
         if (supportedAbis.isEmpty()) return true
 
         return supportedAbis.any { abi ->
@@ -2168,7 +2184,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun downloadAndReturn(candidate: DownloadCandidate) {
-        val activeRequest = request ?: return
+        val activeRequest = effectiveRequest() ?: return
         val settings = helperSettings
         settings.networkPolicy.blockReason(this)?.let { message ->
             appendLog(message, LogLevel.Warning)
@@ -2226,7 +2242,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun returnPickedFile(candidate: DownloadCandidate, uri: Uri?) {
-        val activeRequest = request ?: return
+        val activeRequest = effectiveRequest() ?: return
         val settings = helperSettings
 
         if (uri == null) {
@@ -2273,7 +2289,7 @@ class MainActivity : ComponentActivity() {
             ?.substringAfterLast('.', "")
             ?.takeIf { it.isNotBlank() && it != displayName }
             ?: candidate.fileKind.takeUnless { it.equals("web", ignoreCase = true) }
-            ?: request?.requestedFileType
+            ?: effectiveRequest()?.requestedFileType
             ?: "apk"
         val outputName = displayName
             ?.takeIf(String::isNotBlank)
@@ -2546,12 +2562,12 @@ private enum class DownloadLocation(
     val description: String
 ) {
     TEMPORARY(
-        title = "Temporary hand-off",
-        description = "Store downloads in Helper cache and clean them after Morphe has had time to copy them."
+        title = "Hand off only",
+        description = "Keep the file in Helper's cache, send it to Morphe, then clean it up later."
     ),
     DOWNLOADS(
-        title = "Downloads folder",
-        description = "Keep a visible copy in Downloads/APK Download Helper after validation."
+        title = "Keep a copy",
+        description = "Save a visible copy in Downloads/APK Download Helper after the file checks out."
     )
 }
 
@@ -2561,15 +2577,15 @@ private enum class NetworkPolicy(
 ) {
     WIFI_ONLY(
         title = "Wi-Fi only",
-        description = "Check sources and download only on unmetered networks."
+        description = "Use Wi-Fi for source checks and downloads."
     ),
     MOBILE_DATA_ONLY(
         title = "Mobile data only",
-        description = "Use cellular data only and block Wi-Fi source checks."
+        description = "Use cellular data and pause when Wi-Fi is active."
     ),
     WIFI_AND_MOBILE(
-        title = "Wi-Fi and mobile data",
-        description = "Use whichever active network Android provides."
+        title = "Wi-Fi or mobile data",
+        description = "Use whichever connection Android is already using."
     );
 
     fun blockReason(context: Context): String? {
@@ -2779,10 +2795,12 @@ private fun HelperOutlinedButton(
 @Composable
 private fun HelperScreen(
     request: HelperRequest?,
+    selectedAbi: String?,
     state: UiState,
     settings: HelperSettings,
     logs: List<RequestLogEntry>,
     onSettingsChange: (HelperSettings) -> Unit,
+    onSelectedAbiChange: (String?) -> Unit,
     onRefresh: () -> Unit,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
@@ -2802,11 +2820,23 @@ private fun HelperScreen(
         pendingFilePick = candidate
         filePickerLauncher.launch(APK_PICKER_MIME_TYPES)
     }
+    BackHandler(enabled = showSettings) {
+        showSettings = false
+    }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
+        if (showSettings) {
+            HelperSettingsScreen(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                onBack = { showSettings = false }
+            )
+            return@Surface
+        }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -2829,19 +2859,10 @@ private fun HelperScreen(
                         modifier = Modifier.weight(1f)
                     )
                     HelperOutlinedButton(
-                        text = if (showSettings) "Hide settings" else "Settings",
-                        onClick = { showSettings = !showSettings },
+                        text = "Settings",
+                        onClick = { showSettings = true },
                         icon = Icons.Outlined.Settings,
                         modifier = Modifier.widthIn(min = 132.dp)
-                    )
-                }
-            }
-
-            if (showSettings) {
-                item {
-                    HelperSettingsCard(
-                        settings = settings,
-                        onSettingsChange = onSettingsChange
                     )
                 }
             }
@@ -2851,7 +2872,13 @@ private fun HelperScreen(
                 return@LazyColumn
             }
 
-            item { AppInfoCard(request) }
+            item {
+                AppInfoCard(
+                    request = request,
+                    selectedAbi = selectedAbi,
+                    onSelectedAbiChange = onSelectedAbiChange
+                )
+            }
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -2911,6 +2938,74 @@ private fun HelperScreen(
 }
 
 @Composable
+private fun HelperSettingsScreen(
+    settings: HelperSettings,
+    onSettingsChange: (HelperSettings) -> Unit,
+    onBack: () -> Unit
+) {
+    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = HelperDefaults.ContentPadding, vertical = HelperDefaults.ContentPadding)
+            .pointerInput(swipeThresholdPx) {
+                var totalDrag = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { totalDrag = 0f },
+                    onHorizontalDrag = { _, dragAmount ->
+                        totalDrag += dragAmount
+                    },
+                    onDragEnd = {
+                        if (totalDrag >= swipeThresholdPx) onBack()
+                    },
+                    onDragCancel = { totalDrag = 0f }
+                )
+            },
+        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                HelperOutlinedButton(
+                    text = "Back",
+                    onClick = onBack,
+                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                    modifier = Modifier.widthIn(min = 112.dp)
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = "Settings",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = "Version ${BuildConfig.VERSION_NAME}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+        }
+
+        item {
+            HelperSettingsCard(
+                settings = settings,
+                onSettingsChange = onSettingsChange
+            )
+        }
+    }
+}
+
+@Composable
 private fun HelperSettingsCard(
     settings: HelperSettings,
     onSettingsChange: (HelperSettings) -> Unit
@@ -2922,18 +3017,7 @@ private fun HelperSettingsCard(
                 .padding(HelperDefaults.ContentPadding),
             verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
         ) {
-            Text(
-                text = "Helper settings",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "Version ${BuildConfig.VERSION_NAME}",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall
-            )
-
-            SettingsGroupTitle("Download location")
+            SettingsGroupTitle("Save downloads")
             DownloadLocation.entries.forEach { location ->
                 SettingsChoiceRow(
                     title = location.title,
@@ -2945,7 +3029,7 @@ private fun HelperSettingsCard(
                 )
             }
 
-            SettingsGroupTitle("Network access")
+            SettingsGroupTitle("Connection")
             NetworkPolicy.entries.forEach { policy ->
                 SettingsChoiceRow(
                     title = policy.title,
@@ -3047,9 +3131,9 @@ private fun TemporaryCleanupRow(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text("Clean temporary downloads", fontWeight = FontWeight.Bold)
+                Text("Clean up hand-off files", fontWeight = FontWeight.Bold)
                 Text(
-                    "Delete staged APKs after hand-off and remove old cache files on launch.",
+                    "Remove temporary APKs after Morphe gets them, and clear old cache files on launch.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -3068,7 +3152,12 @@ private fun EmptyLaunchState() {
 }
 
 @Composable
-private fun AppInfoCard(request: HelperRequest) {
+private fun AppInfoCard(
+    request: HelperRequest,
+    selectedAbi: String?,
+    onSelectedAbiChange: (String?) -> Unit
+) {
+    val availableAbis = request.availableAbis
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
             modifier = Modifier
@@ -3086,12 +3175,55 @@ private fun AppInfoCard(request: HelperRequest) {
             AppInfoRow(label = "Version", value = request.versionName ?: "Any compatible")
             AppInfoRow(label = "Version code", value = request.versionCodeSummary ?: "Any")
             AppInfoRow(label = "Format", value = request.requestedFormatLabel)
-            AppInfoRow(label = "ABI", value = request.supportedAbis.firstOrNull() ?: "Default")
+            AppInfoRow(
+                label = "ABI",
+                value = selectedAbi ?: availableAbis.firstOrNull()?.let { "Auto ($it)" } ?: "Auto"
+            )
+
+            if (availableAbis.size > 1) {
+                AbiSelector(
+                    availableAbis = availableAbis,
+                    selectedAbi = selectedAbi,
+                    onSelectedAbiChange = onSelectedAbiChange
+                )
+            }
 
             if (request.stockInstallRequired) {
                 Text(
                     text = "Root mount may require the stock app before Morphe patches it.",
                     color = MaterialTheme.colorScheme.secondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AbiSelector(
+    availableAbis: List<String>,
+    selectedAbi: String?,
+    onSelectedAbiChange: (String?) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)) {
+        Text(
+            text = "Auto follows Morphe's ABI order. Pick one if a source lists variants.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodySmall
+        )
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+        ) {
+            SourcePill(
+                text = "Auto",
+                selected = selectedAbi == null,
+                onClick = { onSelectedAbiChange(null) }
+            )
+            availableAbis.forEach { abi ->
+                SourcePill(
+                    text = abi,
+                    selected = selectedAbi == abi,
+                    onClick = { onSelectedAbiChange(abi) }
                 )
             }
         }
@@ -3518,8 +3650,6 @@ private fun CandidateInfoChips(request: HelperRequest, candidate: DownloadCandid
         }
         if (candidate.versionCode != null) {
             HelperChip(text = "Code ${candidate.versionCode}", tone = versionCodeTone)
-        } else if (requestedVersionCodes.isNotEmpty() && candidate.option == CandidateOption.REQUESTED) {
-            HelperChip(text = "Build checked after download", tone = ChipTone.Neutral)
         }
         if (candidate.versionName == null && candidate.versionCode == null) {
             HelperChip(text = candidate.versionDisplay, tone = versionTone)
@@ -3690,6 +3820,12 @@ private data class HelperRequest(
     val fallbackWebUrl: String,
     val sourceHintUrls: List<String>
 ) {
+    val availableAbis: List<String>
+        get() = supportedAbis
+            .ifEmpty { Build.SUPPORTED_ABIS.toList() }
+            .mapNotNull { it.trim().takeIf(String::isNotBlank) }
+            .distinct()
+
     val requestedFormatLabel: String
         get() = requestedFileType
             ?.substringAfterLast('.')
@@ -3806,6 +3942,11 @@ private data class HelperRequest(
         return (sourceHintUrls + fallbackWebUrl).distinct().filter { url ->
             needles.any { needle -> url.contains(needle, ignoreCase = true) }
         }
+    }
+
+    fun withPreferredAbi(abi: String?): HelperRequest {
+        val preferredAbi = abi?.takeIf { it in availableAbis } ?: return this
+        return copy(supportedAbis = listOf(preferredAbi))
     }
 
     companion object {
