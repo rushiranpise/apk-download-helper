@@ -279,7 +279,12 @@ class MainActivity : ComponentActivity() {
                 option = option,
                 state = resolved.errorMessage
                     ?.takeIf { resolved.candidates.isEmpty() }
-                    ?.let(ResolveState::Error)
+                    ?.let { message ->
+                        ResolveState.Error(
+                            message = message,
+                            fallbackCandidate = resolved.fallbackCandidate
+                        )
+                    }
                     ?: ResolveState.Done(resolved.candidates)
             )
         }
@@ -369,7 +374,8 @@ class MainActivity : ComponentActivity() {
         lookup.exceptionOrNull()?.let { error ->
             return ResolveOutcome(
                 candidates = emptyList(),
-                errorMessage = sourceFailureMessage(source, error)
+                errorMessage = sourceFailureMessage(source, error),
+                fallbackCandidate = sourceErrorFallbackCandidate(request, source, option)
             )
         }
         val sourceCandidates = lookup
@@ -453,6 +459,54 @@ class MainActivity : ComponentActivity() {
         }
             .distinctBy(DownloadCandidate::identityKey)
             .sortedBy { it.sortIndex }
+    }
+
+    private fun sourceErrorFallbackCandidate(
+        request: HelperRequest,
+        source: DownloadSource,
+        option: CandidateOption
+    ): DownloadCandidate? {
+        if (option == CandidateOption.MANUAL || source == DownloadSource.AURORA) return null
+
+        val manual = manualCandidates(request).firstOrNull { it.source == source } ?: return null
+        val requestedVersionName = request.requestedVersionNames.firstOrNull()
+        val requestedVersionCode = request.versionCode ?: request.versionCodes.singleOrNull()
+        val url = when (option) {
+            CandidateOption.REQUESTED -> request.sourceHintUrlsFor(source).firstOrNull()
+                ?: sourceVersionSearchUrl(request, source)
+                ?: manual.url
+            CandidateOption.LATEST -> manual.url
+            CandidateOption.MANUAL -> manual.url
+        }
+
+        return manual.copy(
+            versionName = requestedVersionName.takeIf { option == CandidateOption.REQUESTED },
+            versionCode = requestedVersionCode.takeIf { option == CandidateOption.REQUESTED },
+            url = url,
+            fileKind = "web",
+            option = option,
+            directDownload = false,
+            versionStatus = if (option == CandidateOption.REQUESTED) VersionStatus.REQUESTED else VersionStatus.LATEST,
+            formatMatches = true,
+            note = null,
+            variantLabel = null,
+            files = emptyList()
+        )
+    }
+
+    private fun sourceVersionSearchUrl(request: HelperRequest, source: DownloadSource): String? {
+        val domain = source.searchDomain() ?: return null
+        val version = request.requestedVersionLabel.takeIf { it != "any compatible version" } ?: return null
+        val query = buildList {
+            add(request.packageName)
+            add("\"$version\"")
+            request.requestedFileKinds
+                .orderedFileKinds()
+                .firstOrNull()
+                ?.let(::add)
+            add("site:$domain")
+        }.joinToString(" ")
+        return "https://www.google.com/search?q=${URLEncoder.encode(query, "UTF-8")}"
     }
 
     private fun apkMirrorRequested(request: HelperRequest) = DownloadCandidate(
@@ -3660,6 +3714,16 @@ private fun CandidateResolveSection(
 
         is ResolveState.Error -> {
             InfoCard(state.message)
+            state.fallbackCandidate?.let { candidate ->
+                CandidateCard(
+                    request = request,
+                    candidate = candidate,
+                    onDownload = { onDownload(candidate) },
+                    onPickDownloadedFile = { onPickDownloadedFile(candidate) },
+                    onUseInstalledApp = { onUseInstalledApp(candidate) },
+                    installedPackageRefreshToken = installedPackageRefreshToken
+                )
+            }
             HelperOutlinedButton(
                 text = "Try again",
                 onClick = onResolve,
@@ -4301,14 +4365,18 @@ private data class SourceCandidateGroup(
 
 private data class ResolveOutcome(
     val candidates: List<DownloadCandidate>,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val fallbackCandidate: DownloadCandidate? = null
 )
 
 private sealed interface ResolveState {
     data object Idle : ResolveState
     data object Loading : ResolveState
     data class Done(val candidates: List<DownloadCandidate>) : ResolveState
-    data class Error(val message: String) : ResolveState
+    data class Error(
+        val message: String,
+        val fallbackCandidate: DownloadCandidate? = null
+    ) : ResolveState
 }
 
 private data class ApkMirrorLatestInfo(
@@ -4459,6 +4527,16 @@ private enum class DownloadSource(
     APTOIDE("Aptoide", 4),
     AURORA("Aurora", 5, supportsManualArtifactPicker = false),
     PLAY("Play", 6, supportsManualArtifactPicker = false)
+}
+
+private fun DownloadSource.searchDomain(): String? = when (this) {
+    DownloadSource.APK_MIRROR -> "apkmirror.com"
+    DownloadSource.UPTODOWN -> "uptodown.com"
+    DownloadSource.APK_PURE -> "apkpure.com"
+    DownloadSource.APK_COMBO -> "apkcombo.com"
+    DownloadSource.APTOIDE -> "aptoide.com"
+    DownloadSource.PLAY -> "play.google.com"
+    DownloadSource.AURORA -> null
 }
 
 private enum class CandidateOption {
