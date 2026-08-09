@@ -366,6 +366,12 @@ class MainActivity : ComponentActivity() {
     ): ResolveOutcome {
         val lookup = runCatching { findSourceCandidates(request, source, option) }
             .onFailure { Log.w(TAG, "${source.label} ${option.name.lowercase(Locale.US)} lookup failed", it) }
+        lookup.exceptionOrNull()?.let { error ->
+            return ResolveOutcome(
+                candidates = emptyList(),
+                errorMessage = sourceFailureMessage(source, error)
+            )
+        }
         val sourceCandidates = lookup
             .getOrDefault(emptyList())
             .distinctBy(DownloadCandidate::identityKey)
@@ -469,11 +475,10 @@ class MainActivity : ComponentActivity() {
         }.getOrNull())
 
     private fun findApkMirrorLatest(request: HelperRequest): List<DownloadCandidate> {
-        val searchUrl = apkMirrorPackageSearchUrl(request.packageName)
-        val latestInfo = runCatching { resolveApkMirrorLatestInfo(request, searchUrl) }
-            .onFailure { Log.w(TAG, "APKMirror latest resolve failed", it) }
-            .getOrNull()
-
+        val latestInfo = resolveApkMirrorLatestInfo(
+            request = request,
+            searchUrl = apkMirrorPackageSearchUrl(request.packageName)
+        )
         val latestReleaseUrl = latestInfo
             ?.openUrl
             ?.takeIf(::apkMirrorLooksLikeReleaseUrl)
