@@ -3459,24 +3459,50 @@ internal fun Context.readDownloadedApkMetadata(file: File): DownloadedApkMetadat
     return runCatching {
         val validationDir = File(cacheDir, "validation").apply { mkdirs() }
         ZipFile(file).use { zip ->
-            val entry = zip.entries()
+            // The base APK inside split containers is not always named "base.apk":
+            // some sources (e.g. APKPure XAPKs) name it after the package. Trying
+            // the first alphabetical .apk entry is wrong — config splits like
+            // config.ar.apk carry no manifest and fail to parse. Prefer the real
+            // base: exact base.apk, then a name matching the package (derived from
+            // the output file name), then the largest entry, and take the first
+            // entry that actually reads as an APK.
+            val packageHint = file.nameWithoutExtension
+                .substringBefore('-')
+                .lowercase(Locale.US)
+            val apkEntries = zip.entries()
                 .asSequence()
                 .filter { !it.isDirectory && it.name.endsWith(".apk", ignoreCase = true) }
                 .sortedWith(
-                    compareBy<java.util.zip.ZipEntry> {
-                        !it.name.substringAfterLast('/').equals("base.apk", ignoreCase = true)
-                    }.thenBy { it.name }
+                    compareBy<java.util.zip.ZipEntry> { entry ->
+                        val name = entry.name.substringAfterLast('/').lowercase(Locale.US)
+                        when {
+                            name == "base.apk" -> 0
+                            packageHint.isNotEmpty() && name.contains(packageHint) -> 1
+                            name.contains("base") -> 2
+                            else -> 3
+                        }
+                    }
+                        .thenByDescending { it.size }
+                        .thenBy { it.name }
                 )
-                .firstOrNull()
-                ?: return@runCatching null
-            val extracted = File(
-                validationDir,
-                "${file.nameWithoutExtension}-${entry.name.hashCode()}.apk".sanitizeFileName()
-            )
-            zip.getInputStream(entry).use { input ->
-                extracted.outputStream().use { output -> input.copyTo(output) }
+                .toList()
+            var metadata: DownloadedApkMetadata? = null
+            for (entry in apkEntries) {
+                val extracted = File(
+                    validationDir,
+                    "${file.nameWithoutExtension}-${entry.name.hashCode()}.apk".sanitizeFileName()
+                )
+                zip.getInputStream(entry).use { input ->
+                    extracted.outputStream().use { output -> input.copyTo(output) }
+                }
+                val read = readApkMetadata(extracted)
+                extracted.delete()
+                if (read != null) {
+                    metadata = read
+                    break
+                }
             }
-            readApkMetadata(extracted).also { extracted.delete() }
+            metadata
         }
     }.getOrNull()
 }
