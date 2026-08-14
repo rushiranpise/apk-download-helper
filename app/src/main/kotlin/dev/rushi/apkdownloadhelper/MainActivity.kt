@@ -25,6 +25,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,6 +49,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -81,6 +83,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1830,6 +1833,13 @@ private fun SourceTabs(
     }
 }
 
+private enum class SourceSubTab(val label: String) {
+    Manual("Manual"),
+    Recommended("Recommended"),
+    Latest("Latest"),
+    History("History")
+}
+
 @Composable
 private fun SourcePageContent(
     request: HelperRequest,
@@ -1842,73 +1852,125 @@ private fun SourcePageContent(
     onDownloadVersion: (DownloadCandidate) -> Unit,
     installedPackageRefreshToken: Int
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        if (group.manual.isNotEmpty()) {
-            SectionHeader("Manual")
-            group.manual.forEach { candidate ->
-                CandidateCard(
-                    request = request,
-                    candidate = candidate,
-                    onDownload = { onDownload(candidate) },
-                    onPickDownloadedFile = { onPickDownloadedFile(candidate) },
-                    onUseInstalledApp = { onUseInstalledApp(candidate) },
-                    installedPackageRefreshToken = installedPackageRefreshToken
-                )
+    val subTabs = remember(group, request) {
+        buildList {
+            if (group.manual.isNotEmpty()) add(SourceSubTab.Manual)
+            if (request.hasKnownVersionRequest) add(SourceSubTab.Recommended)
+            add(SourceSubTab.Latest)
+            if (group.source != DownloadSource.AURORA &&
+                group.source != DownloadSource.PLAY
+            ) {
+                add(SourceSubTab.History)
             }
         }
+    }
+    var selectedTab by rememberSaveable(group.source) {
+        mutableStateOf(subTabs.firstOrNull() ?: SourceSubTab.Latest)
+    }
+    val safeTab = subTabs.firstOrNull { it == selectedTab } ?: subTabs.firstOrNull()
+        ?: SourceSubTab.Latest
 
-        if (request.hasKnownVersionRequest) {
-            when (group.source) {
-                DownloadSource.AURORA -> {
-                    InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
-                }
-                DownloadSource.PLAY -> {
-                    InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
-                }
-                else -> {
-                    SectionHeader("Recommended")
-                    CandidateResolveSection(
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (subTabs.size > 1) {
+            SubTabRow(
+                tabs = subTabs,
+                selected = safeTab,
+                onSelect = { selectedTab = it }
+            )
+        }
+
+        when (safeTab) {
+            SourceSubTab.Manual -> {
+                SectionHeader("Manual")
+                group.manual.forEach { candidate ->
+                    CandidateCard(
                         request = request,
-                        state = group.recommended,
-                        actionText = "Find recommended",
-                        loadingText = "Checking recommended version...",
-                        emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
-                        onResolve = {
-                            onResolve(group.source, CandidateOption.REQUESTED)
-                        },
-                        onDownload = onDownload,
-                        onPickDownloadedFile = onPickDownloadedFile,
-                        onUseInstalledApp = onUseInstalledApp,
+                        candidate = candidate,
+                        onDownload = { onDownload(candidate) },
+                        onPickDownloadedFile = { onPickDownloadedFile(candidate) },
+                        onUseInstalledApp = { onUseInstalledApp(candidate) },
                         installedPackageRefreshToken = installedPackageRefreshToken
                     )
                 }
             }
+
+            SourceSubTab.Recommended -> {
+                when (group.source) {
+                    DownloadSource.AURORA -> {
+                        InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
+                    }
+                    DownloadSource.PLAY -> {
+                        InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
+                    }
+                    else -> {
+                        SectionHeader("Recommended")
+                        CandidateResolveSection(
+                            request = request,
+                            state = group.recommended,
+                            actionText = "Find recommended",
+                            loadingText = "Checking recommended version...",
+                            emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
+                            onResolve = {
+                                onResolve(group.source, CandidateOption.REQUESTED)
+                            },
+                            onDownload = onDownload,
+                            onPickDownloadedFile = onPickDownloadedFile,
+                            onUseInstalledApp = onUseInstalledApp,
+                            installedPackageRefreshToken = installedPackageRefreshToken
+                        )
+                    }
+                }
+            }
+
+            SourceSubTab.Latest -> {
+                SectionHeader("Latest")
+                CandidateResolveSection(
+                    request = request,
+                    state = group.latest,
+                    actionText = "Find latest",
+                    loadingText = "Checking latest version...",
+                    emptyText = "Latest version was not found on this source. Use Manual mode for this source instead.",
+                    onResolve = {
+                        onResolve(group.source, CandidateOption.LATEST)
+                    },
+                    onDownload = onDownload,
+                    onPickDownloadedFile = onPickDownloadedFile,
+                    onUseInstalledApp = onUseInstalledApp,
+                    installedPackageRefreshToken = installedPackageRefreshToken
+                )
+            }
+
+            SourceSubTab.History -> {
+                SectionHeader("Version history")
+                VersionHistorySection(
+                    state = group.history,
+                    onResolve = { onVersionHistory(group.source) },
+                    onDownloadVersion = onDownloadVersion
+                )
+            }
         }
+    }
+}
 
-        SectionHeader("Latest")
-        CandidateResolveSection(
-            request = request,
-            state = group.latest,
-            actionText = "Find latest",
-            loadingText = "Checking latest version...",
-            emptyText = "Latest version was not found on this source. Use Manual mode for this source instead.",
-            onResolve = {
-                onResolve(group.source, CandidateOption.LATEST)
-            },
-            onDownload = onDownload,
-            onPickDownloadedFile = onPickDownloadedFile,
-            onUseInstalledApp = onUseInstalledApp,
-            installedPackageRefreshToken = installedPackageRefreshToken
-        )
-
-        if (group.source != DownloadSource.AURORA &&
-            group.source != DownloadSource.PLAY
-        ) {
-            SectionHeader("Version history")
-            VersionHistorySection(
-                state = group.history,
-                onResolve = { onVersionHistory(group.source) },
-                onDownloadVersion = onDownloadVersion
+@Composable
+private fun SubTabRow(
+    tabs: List<SourceSubTab>,
+    selected: SourceSubTab,
+    onSelect: (SourceSubTab) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+    ) {
+        tabs.forEach { tab ->
+            SourcePill(
+                text = tab.label,
+                selected = tab == selected,
+                onClick = { onSelect(tab) },
+                height = 36.dp,
+                minWidth = 0.dp
             )
         }
     }
@@ -2113,14 +2175,16 @@ private fun SourcePill(
     text: String,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    height: Dp = 44.dp,
+    minWidth: Dp = 92.dp
 ) {
     val shape = RoundedCornerShape(50)
     val colors = MaterialTheme.colorScheme
     Surface(
         modifier = modifier
-            .height(44.dp)
-            .widthIn(min = 92.dp)
+            .height(height)
+            .widthIn(min = minWidth)
             .clip(shape)
             .clickable(onClick = onClick),
         shape = shape,
