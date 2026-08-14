@@ -45,6 +45,7 @@ class ApkMirrorParserTest {
                         """<html><body>
                            <a href="/apk/example-org/example-app/2-0-0-release/">2.0.0</a>
                            <a href="/apk/example-org/example-app/1-0-0-release/">1.0.0</a>
+                           <a href="/apk/other-dev/other-app/9-9-9-release/">Sidebar Trending</a>
                          </body></html>""",
                     uploadsUrl2 to
                         """<html><body>
@@ -56,6 +57,7 @@ class ApkMirrorParserTest {
 
         val candidates = parser.resolveHistory(testRequest(packageName = packageName))
 
+        // The trending sidebar link for another app must not leak into history.
         assertEquals(3, candidates.size)
         assertEquals(listOf("2.0.0", "1.0.0", "0.9.0"), candidates.map { it.versionName })
         assertEquals("https://www.apkmirror.com/apk/example-org/example-app/2-0-0-release/", candidates[0].url)
@@ -205,6 +207,81 @@ class ApkMirrorParserTest {
 
         assertTrue(result.exceptionOrNull() is SourceAppNotFoundException)
         assertEquals(listOf(searchUrl), fetcher.requestedUrls())
+    }
+
+    @Test
+    fun resolveHistoryCandidate_resolvesDirectDownloadFromReleasePage() = runBlocking {
+        val releaseUrl = "https://www.apkmirror.com/apk/example-org/example-app/2-0-0-release/"
+        val variantUrl = "$releaseUrl"
+        val downloadPageUrl = "https://www.apkmirror.com/apk/example-org/example-app/2-0-0-release/download/"
+        val finalUrl = "https://www.apkmirror.com/download.php?id=123&key=abc"
+        val fetcher = FakeSourceTextFetcher(
+            pages = mapOf(
+                releaseUrl to
+                    """<html><body>
+                       <a class="downloadButton" href="$downloadPageUrl">Download</a>
+                     </body></html>""",
+                downloadPageUrl to
+                    """<html><body><a id="download-link" href="$finalUrl"></a></body></html>"""
+            )
+        )
+        val parser = ApkMirrorParser(parserContext(fetcher))
+        val historyCandidate = DownloadCandidate(
+            source = DownloadSource.APK_MIRROR,
+            name = "Example App",
+            packageName = packageName,
+            versionName = "2.0.0",
+            versionCode = null,
+            url = releaseUrl,
+            fileKind = "web",
+            option = CandidateOption.LATEST,
+            directDownload = false,
+            versionStatus = VersionStatus.LATEST,
+            formatMatches = true
+        )
+
+        val resolved = parser.resolveHistoryCandidate(
+            request = testRequest(packageName = packageName),
+            candidate = historyCandidate
+        )
+
+        assertTrue(resolved != null)
+        assertTrue(resolved!!.directDownload)
+        assertEquals(finalUrl, resolved.url)
+        assertEquals("2.0.0", resolved.versionName)
+        assertEquals(1, resolved.files.size)
+    }
+
+    @Test
+    fun resolveHistoryCandidate_returnsNullWhenNoDirectDownload() = runBlocking {
+        val releaseUrl = "https://www.apkmirror.com/apk/example-org/example-app/2-0-0-release/"
+        val fetcher = FakeSourceTextFetcher(
+            pages = mapOf(
+                releaseUrl to """<html><body>No download buttons here.</body></html>"""
+            )
+        )
+        val parser = ApkMirrorParser(parserContext(fetcher))
+        val historyCandidate = DownloadCandidate(
+            source = DownloadSource.APK_MIRROR,
+            name = "Example App",
+            packageName = packageName,
+            versionName = "2.0.0",
+            versionCode = null,
+            url = releaseUrl,
+            fileKind = "web",
+            option = CandidateOption.LATEST,
+            directDownload = false,
+            versionStatus = VersionStatus.LATEST,
+            formatMatches = true
+        )
+
+        val resolved = parser.resolveHistoryCandidate(
+            request = testRequest(packageName = packageName),
+            candidate = historyCandidate
+        )
+
+        // No direct download: the UI flips this row to "Open link".
+        assertTrue(resolved == null)
     }
 
     @Test

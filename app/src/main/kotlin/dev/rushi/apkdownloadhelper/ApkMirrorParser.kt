@@ -56,7 +56,10 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
             } catch (e: Exception) {
                 continue
             }
-            val links = apkMirrorReleaseLinks(doc)
+            // Filter by the app page path: the uploads page also carries
+            // trending/sidebar release links for other apps, which must not
+            // leak into this app's version history.
+            val links = apkMirrorReleaseLinks(doc, appPageUrl)
             if (links.isEmpty()) break
             releaseUrls += links
         }
@@ -81,6 +84,25 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
                 )
             }
             .sortedWith { left, right -> compareVersionNames(right.versionName, left.versionName) }
+    }
+
+    override suspend fun resolveHistoryCandidate(
+        request: HelperRequest,
+        candidate: DownloadCandidate
+    ): DownloadCandidate? {
+        // History rows carry the release-page URL. Resolve it the same way the
+        // Recommended/Latest tabs do; return null when no direct download can be
+        // produced so the UI can offer an "Open link" action instead.
+        return runCatching {
+            apkMirrorCandidatesFromReleaseUrl(
+                request = request,
+                releaseUrl = candidate.url,
+                versionName = candidate.versionName,
+                option = candidate.option
+            )
+        }
+            .getOrNull()
+            ?.firstOrNull { it.directDownload }
     }
 
     private fun apkMirrorRequested(request: HelperRequest) = DownloadCandidate(

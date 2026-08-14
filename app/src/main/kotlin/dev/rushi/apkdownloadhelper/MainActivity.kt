@@ -374,6 +374,11 @@ class MainActivity : ComponentActivity() {
 
     private fun downloadVersion(candidate: DownloadCandidate) {
         val activeRequest = request ?: return
+        // Capture the current result before Loading replaces it, so a failed
+        // resolution can restore the history list with this row flipped to
+        // "Open link" instead of wiping back to a fresh screen.
+        val currentResult = (uiState as? UiState.Ready)?.result
+            ?: initialCandidateResult(activeRequest)
         appendLog("Resolving ${candidate.versionDisplay} from ${candidate.source.label} for download...")
         uiState = UiState.Loading
         lifecycleScope.launch {
@@ -383,12 +388,19 @@ class MainActivity : ComponentActivity() {
             resolved
                 .onSuccess { direct ->
                     if (direct == null) {
+                        // No direct download exists for this version. Keep the
+                        // history list usable by flipping this row to an
+                        // "Open link" action instead of erroring the whole screen.
                         val message =
                             "No direct download was available for ${candidate.versionDisplay} " +
                                 "on ${candidate.source.label}. Open the version page manually."
-                                .withManualModeHint()
                         appendLog(message, LogLevel.Warning)
-                        uiState = UiState.Error(message)
+                        uiState = UiState.Ready(
+                            currentResult.markHistoryCandidateNoDirectDownload(
+                                source = candidate.source,
+                                candidateKey = candidate.identityKey()
+                            )
+                        )
                     } else {
                         downloadAndReturn(direct)
                     }
@@ -2091,6 +2103,7 @@ private fun VersionHistorySection(
                 state.candidates.forEach { candidate ->
                     VersionHistoryRow(
                         candidate = candidate,
+                        showOpenLink = candidate.identityKey() in state.noDirectDownloadKeys,
                         onDownloadVersion = { onDownloadVersion(candidate) }
                     )
                 }
@@ -2102,8 +2115,11 @@ private fun VersionHistorySection(
 @Composable
 private fun VersionHistoryRow(
     candidate: DownloadCandidate,
+    showOpenLink: Boolean,
     onDownloadVersion: () -> Unit
 ) {
+    val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
     HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
         Row(
             modifier = Modifier
@@ -2123,17 +2139,36 @@ private fun VersionHistoryRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = candidate.fileKind.uppercase(Locale.US),
+                    text = if (showOpenLink) {
+                        "No direct download — open the version page"
+                    } else {
+                        candidate.fileKind.uppercase(Locale.US)
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            HelperButton(
-                text = "Download",
-                onClick = onDownloadVersion,
-                icon = Icons.Outlined.Download,
-                modifier = Modifier.widthIn(min = 120.dp)
-            )
+            if (showOpenLink) {
+                HelperOutlinedButton(
+                    text = "Open link",
+                    onClick = {
+                        if (candidate.source == DownloadSource.PLAY) {
+                            context.openPlayStoreListing(candidate.packageName, candidate.url)
+                        } else {
+                            uriHandler.openUri(candidate.url)
+                        }
+                    },
+                    icon = Icons.Outlined.OpenInBrowser,
+                    modifier = Modifier.widthIn(min = 120.dp)
+                )
+            } else {
+                HelperButton(
+                    text = "Download",
+                    onClick = onDownloadVersion,
+                    icon = Icons.Outlined.Download,
+                    modifier = Modifier.widthIn(min = 120.dp)
+                )
+            }
         }
     }
 }
@@ -2930,6 +2965,24 @@ private data class CandidateResult(
             if (group.source == source) group.copy(history = state) else group
         }
     )
+
+    fun markHistoryCandidateNoDirectDownload(
+        source: DownloadSource,
+        candidateKey: String
+    ): CandidateResult = copy(
+        sourceGroups = sourceGroups.map { group ->
+            if (group.source == source && group.history is VersionHistoryState.Done) {
+                val done = group.history as VersionHistoryState.Done
+                group.copy(
+                    history = done.copy(
+                        noDirectDownloadKeys = done.noDirectDownloadKeys + candidateKey
+                    )
+                )
+            } else {
+                group
+            }
+        }
+    )
 }
 
 private data class SourceCandidateGroup(
@@ -2960,7 +3013,13 @@ private sealed interface ResolveState {
 private sealed interface VersionHistoryState {
     data object Idle : VersionHistoryState
     data object Loading : VersionHistoryState
-    data class Done(val candidates: List<DownloadCandidate>) : VersionHistoryState
+    data class Done(
+        val candidates: List<DownloadCandidate>,
+        // Identity keys of candidates whose direct download could not be
+        // resolved; those rows render an "Open link" action instead of
+        // "Download" so the user is not stuck in a resolve-then-error loop.
+        val noDirectDownloadKeys: Set<String> = emptySet()
+    ) : VersionHistoryState
     data class Error(val message: String) : VersionHistoryState
 }
 
