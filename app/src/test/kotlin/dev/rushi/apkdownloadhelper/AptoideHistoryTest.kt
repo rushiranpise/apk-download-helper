@@ -38,6 +38,20 @@ class AptoideHistoryTest {
         </body></html>
     """.trimIndent()
 
+    private val slugUrl = "https://example-app.en.aptoide.com/app"
+    private val slugVersionsUrl = "https://example-app.en.aptoide.com/versions"
+
+    private val slugAppPageHtml = """
+        <html><body>
+          <script id="__NEXT_DATA__" type="application/json">
+            {"props":{"pageProps":{"app":{
+              "id": 1, "name": "Example App", "package": "$packageName",
+              "file": {"vername": "2.0.0", "vercode": "200", "path": "https://cdn.aptoide.com/app/2.apk"},
+              "urls": {"w": "$slugUrl", "m": "$slugUrl"}
+            }}}}
+          </script>
+        </body></html>
+    """.trimIndent()
     @Test
     fun resolveHistory_listsVersionsNewestFirst() = runBlocking {
         val api = FakeAptoideApi(appByPackage = appFixture)
@@ -56,6 +70,25 @@ class AptoideHistoryTest {
         assertEquals("$versionsUrl/2", candidates[0].url)
         assertEquals("apk", candidates[0].fileKind)
         assertTrue(!candidates[0].directDownload)
+    }
+
+    @Test
+    fun resolveHistory_fallsBackToSlugWebPageWhenApiHasNoApp() = runBlocking {
+        val api = FakeAptoideApi()
+        val parser = AptoideParser(
+            testParserContext(
+                pages = mapOf(
+                    slugUrl to slugAppPageHtml,
+                    slugVersionsUrl to versionsHtml
+                ),
+                aptoideApi = api
+            )
+        )
+
+        val candidates = parser.resolveHistory(testRequest(packageName = packageName))
+
+        assertEquals(2, candidates.size)
+        assertEquals(listOf("2.0.0", "1.0.0"), candidates.map { it.versionName })
     }
 
     @Test

@@ -202,9 +202,20 @@ internal class AptoideParser(private val ctx: SourceParserContext) : ApkSourcePa
         }.getOrNull()?.let { return it }
 
         val response = aptoideApi.searchApps(AptoideSearchRequest(query = request.packageName))
-        return response.datalist.list
+        response.datalist.list
             .firstOrNull { it.packageName == request.packageName }
             ?.let(::aptoideAppPageUrl)
+            ?.let { return it }
+
+        // The Aptoide API does not index every listed app (getAppByPackage can 404
+        // even though the web page exists, e.g. SCRL at scrl.en.aptoide.com). Fall
+        // back to the slug-based web page so the __NEXT_DATA__ parsing can take over.
+        return runCatching {
+            val slugUrl = "https://${request.appName.slugForUrl()}.en.aptoide.com/app"
+            aptoideAppFromPage(slugUrl)
+                ?.takeIf { it.packageName == request.packageName }
+                ?.let { slugUrl }
+        }.getOrNull()
     }
 
     private fun aptoideAppPageUrl(app: AptoideApp): String? =
