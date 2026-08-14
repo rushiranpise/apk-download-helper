@@ -267,7 +267,10 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
                 CandidateDownloadFile(
                     url = downloadUrl,
                     fileName = fileName,
-                    referer = pageUrl
+                    // No Referer: APKCombo's /d redirects to download.pureapk.com,
+                    // which bounces any request carrying an apkcombo.com Referer to
+                    // an apkpure.com/url HTML page instead of serving the file.
+                    referer = null
                 )
             )
         )
