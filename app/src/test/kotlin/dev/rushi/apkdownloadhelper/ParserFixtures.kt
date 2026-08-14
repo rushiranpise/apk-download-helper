@@ -2,12 +2,14 @@ package dev.rushi.apkdownloadhelper
 
 /** Serves canned HTML/JSON responses keyed by URL so parsers run without the network. */
 internal class FakeSourceTextFetcher(
-    private val pages: Map<String, String>
+    private val pages: Map<String, String>,
+    private val rateLimitedUrls: Set<String> = emptySet()
 ) : SourceTextFetcher {
     private val requested = mutableListOf<String>()
 
     override fun fetchText(url: String, referer: String?): String {
         requested += url
+        if (url in rateLimitedUrls) throw HttpRateLimitedException("HTTP 429 Too Many Requests")
         return pages[url] ?: error("Unexpected fetch: $url")
     }
 
@@ -48,10 +50,11 @@ internal class FakeAptoideApi(
 
 internal fun testParserContext(
     pages: Map<String, String>,
+    rateLimitedUrls: Set<String> = emptySet(),
     apkPureApi: ApkPureApi = FakeApkPureApi(),
     aptoideApi: AptoideApi = FakeAptoideApi()
 ): SourceParserContext = SourceParserContext(
-    fetcher = FakeSourceTextFetcher(pages),
+    fetcher = FakeSourceTextFetcher(pages, rateLimitedUrls),
     apkPureApi = apkPureApi,
     aptoideApi = aptoideApi
 )

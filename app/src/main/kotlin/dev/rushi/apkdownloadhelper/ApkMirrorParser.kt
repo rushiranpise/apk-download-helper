@@ -27,20 +27,35 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
     override fun latestFallbackCandidate(request: HelperRequest): DownloadCandidate =
         apkMirrorLatest(request)
 
+    private val historyCache = HashMap<String, List<DownloadCandidate>>()
+
     override suspend fun resolveHistory(request: HelperRequest): List<DownloadCandidate> {
+        historyCache[request.packageName]?.let { return it }
+        val result = resolveHistoryUncached(request)
+        historyCache[request.packageName] = result
+        return result
+    }
+
+    private suspend fun resolveHistoryUncached(request: HelperRequest): List<DownloadCandidate> {
         val searchDoc = fetchDocument(apkMirrorPackageSearchUrl(request.packageName))
         val appPageUrl = resolveApkMirrorAppPage(searchDoc, request) ?: return emptyList()
         val category = appPageUrl.trimEnd('/').substringAfterLast('/').takeIf(String::isNotBlank)
             ?: return emptyList()
 
         val releaseUrls = mutableListOf<String>()
-        for (page in 1..5) {
+        for (page in 1..3) {
             val pageUrl = if (page == 1) {
                 apkMirrorUploadsUrl(appPageUrl)
             } else {
                 "https://www.apkmirror.com/uploads/page/$page/?appcategory=$category"
             }
-            val doc = runCatching { fetchDocument(pageUrl, referer = appPageUrl) }.getOrNull() ?: continue
+            val doc: Document = try {
+                fetchDocument(pageUrl, referer = appPageUrl)
+            } catch (e: HttpRateLimitedException) {
+                break
+            } catch (e: Exception) {
+                continue
+            }
             val links = apkMirrorReleaseLinks(doc)
             if (links.isEmpty()) break
             releaseUrls += links
@@ -190,8 +205,15 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
     }
 
     private fun resolveApkMirrorAppPage(searchDoc: Document, request: HelperRequest): String? {
+        if (searchDoc.isApkMirrorNoResults()) return null
         for (candidate in apkMirrorAppPageCandidates(searchDoc, request)) {
-            val candidateDoc = runCatching { fetchDocument(candidate) }.getOrNull() ?: continue
+            val candidateDoc: Document = try {
+                fetchDocument(candidate)
+            } catch (e: HttpRateLimitedException) {
+                throw e
+            } catch (e: Exception) {
+                continue
+            }
             if (candidateDoc.apkMirrorMatchesPackage(request.packageName)) return candidate
         }
 
@@ -337,10 +359,14 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
             } else {
                 "https://www.apkmirror.com/uploads/page/$page/?appcategory=$category"
             }
-            val doc = runCatching { fetchDocument(pageUrl, referer = appPageUrl) }
-                .onFailure { Log.w(TAG, "APKMirror uploads page resolve failed: $pageUrl", it) }
-                .getOrNull()
-                ?: continue
+            val doc: Document = try {
+                fetchDocument(pageUrl, referer = appPageUrl)
+            } catch (e: HttpRateLimitedException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "APKMirror uploads page resolve failed: $pageUrl", e)
+                continue
+            }
 
             apkMirrorReleaseLinks(doc)
                 .firstOrNull { url ->
@@ -664,6 +690,9 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
     private fun Document.isCloudflareChallenge(): Boolean =
         title().contains("Just a moment", ignoreCase = true) ||
             text().contains("Enable JavaScript and cookies to continue", ignoreCase = true)
+
+    private fun Document.isApkMirrorNoResults(): Boolean =
+        select("p").any { it.text().contains("No results found matching your query", ignoreCase = true) }
 
     private fun Document.apkMirrorMatchesPackage(packageName: String): Boolean {
         val hasPackageId = select("[id]").any { it.id() == packageName }

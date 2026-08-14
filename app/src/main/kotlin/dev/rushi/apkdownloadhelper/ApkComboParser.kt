@@ -28,7 +28,13 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
         ).distinct()
 
         for (oldVersionsUrl in oldVersionsUrls) {
-            val doc = runCatching { fetchDocument(oldVersionsUrl) }.getOrNull() ?: continue
+            val doc: Document = try {
+                fetchDocument(oldVersionsUrl)
+            } catch (e: HttpRateLimitedException) {
+                throw e
+            } catch (e: Exception) {
+                continue
+            }
             val items = doc.select("a.ver-item[href]")
             if (items.isEmpty()) continue
 

@@ -121,4 +121,5 @@ dependencies {
     implementation("org.jsoup:jsoup:1.22.1")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:5.3.2")
 }

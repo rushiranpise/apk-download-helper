@@ -13,15 +13,53 @@ internal fun interface SourceTextFetcher {
     fun fetchText(url: String, referer: String?): String
 }
 
+/**
+ * Thrown when a source rate-limits us (HTTP 429), so multi-page walks can abort
+ * instead of hammering the site further. The message keeps the "HTTP 429" token
+ * that [sourceFailureMessage] maps to a friendly rate-limit explanation.
+ */
+internal class HttpRateLimitedException(message: String) : Exception(message)
+
+/**
+ * Real-network fetcher shared by all parsers. Enforces a minimum gap between
+ * requests so source resolution never bursts (the main cause of site rate
+ * limits), and surfaces HTTP 429 as [HttpRateLimitedException].
+ */
 internal class OkHttpSourceTextFetcher(
-    private val client: OkHttpClient
+    private val client: OkHttpClient,
+    private val minRequestGapMillis: Long = 800L
 ) : SourceTextFetcher {
+    private val paceGate = Any()
+    private var nextAllowedAtNanos = 0L
+
     override fun fetchText(url: String, referer: String?): String {
+        pace()
         val builder = Request.Builder().url(url)
         referer?.let { builder.header("Referer", it) }
         client.newCall(builder.build()).execute().use { response ->
-            check(response.isSuccessful) { "HTTP ${response.code}" }
+            if (!response.isSuccessful) {
+                if (response.code == 429) {
+                    throw HttpRateLimitedException("HTTP 429 Too Many Requests")
+                }
+                throw IllegalStateException("HTTP ${response.code}")
+            }
             return response.body.string()
+        }
+    }
+
+    /** Enforce a minimum gap between request starts so fetches never burst. */
+    private fun pace() {
+        synchronized(paceGate) {
+            val now = System.nanoTime()
+            val waitMillis = (nextAllowedAtNanos - now) / 1_000_000
+            if (waitMillis > 0) {
+                try {
+                    Thread.sleep(waitMillis)
+                } catch (ignored: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+            nextAllowedAtNanos = System.nanoTime() + minRequestGapMillis * 1_000_000
         }
     }
 }
