@@ -223,7 +223,7 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
         val checkIn = fetchText("https://apkcombo.com/checkin", referer = pageUrl).trim()
         val versionName = apkComboVersion(doc, pageUrl) ?: request.versionName.takeIf { option == CandidateOption.REQUESTED }
 
-        return doc.select("a.variant[href]")
+        val variants = doc.select("a.variant[href]")
             .mapNotNull { variant ->
                 apkComboCandidateFromVariant(
                     request = request,
@@ -235,7 +235,35 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
                 )
             }
             .distinctBy(DownloadCandidate::identityKey)
+        if (variants.isNotEmpty()) return variants
+
+        // No variant links in the HTML: APKCombo gates some downloads behind a
+        // reCAPTCHA that the app cannot solve. Surface that honestly instead of
+        // reporting the version as not found on the source.
+        if (doc.apkComboIsCaptchaGated()) {
+            return listOf(
+                DownloadCandidate(
+                    source = DownloadSource.APK_COMBO,
+                    name = request.appName,
+                    packageName = request.packageName,
+                    versionName = versionName,
+                    versionCode = null,
+                    url = pageUrl,
+                    fileKind = "web",
+                    option = option,
+                    directDownload = false,
+                    versionStatus = request.versionStatus(versionName, null),
+                    formatMatches = true,
+                    note = "APKCombo is showing a captcha for this download. Open the link and download manually."
+                )
+            )
+        }
+        return emptyList()
     }
+
+    private fun Document.apkComboIsCaptchaGated(): Boolean =
+        // Matches both grecaptcha.execute(...) and the site's bare aptcha.execute(...).
+        html().contains("aptcha.execute", ignoreCase = true)
 
     private fun apkComboCandidateFromVariant(
         request: HelperRequest,

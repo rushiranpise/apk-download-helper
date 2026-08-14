@@ -22,6 +22,18 @@ class ApkComboParserTest {
         </body></html>
     """.trimIndent()
 
+    private val gatedPageHtml = """
+        <html><head>
+          <script>
+            aptcha.execute("sitekey", {action: "app_download"}).then(function (token) {
+              fetchData(window.location.href.split('?')[0] + "?token=" + token);
+            });
+          </script>
+        </head><body>
+          <div class="widget seo-widget">No download rows here.</div>
+        </body></html>
+    """.trimIndent()
+
     @Test
     fun findCandidates_latest_extractsDirectVariant() = runBlocking {
         val parser = ApkComboParser(
@@ -51,6 +63,30 @@ class ApkComboParserTest {
         // No Referer: APKCombo's /d links redirect to download.pureapk.com, which
         // bounces requests carrying an apkcombo.com Referer to an HTML page.
         assertNull(candidate.files[0].referer)
+    }
+
+    @Test
+    fun findCandidates_latest_captchaGateReturnsManualFallback() = runBlocking {
+        val parser = ApkComboParser(
+            testParserContext(
+                pages = mapOf(
+                    pageUrl to gatedPageHtml,
+                    checkInUrl to "key=abc"
+                )
+            )
+        )
+
+        val candidates = parser.findCandidates(
+            request = testRequest(packageName = packageName),
+            option = CandidateOption.LATEST
+        )
+
+        assertEquals(1, candidates.size)
+        val candidate = candidates[0]
+        assertTrue(!candidate.directDownload)
+        assertEquals("web", candidate.fileKind)
+        assertEquals(pageUrl, candidate.url)
+        assertTrue(candidate.note.orEmpty().contains("captcha", ignoreCase = true))
     }
 
     @Test
