@@ -42,6 +42,10 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,6 +74,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -1789,12 +1794,18 @@ private fun SourceTabs(
     val groups = result.sourceGroups
 
     val pagerState = rememberPagerState(initialPage = 0) { groups.size }
+    val selectorState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(pagerState.currentPage) {
+        selectorState.animateScrollToItem(pagerState.currentPage)
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SourceSelector(
             groups = groups,
             selectedIndex = pagerState.currentPage,
+            listState = selectorState,
             onSelect = { index ->
                 scope.launch { pagerState.animateScrollToPage(index) }
             }
@@ -2143,22 +2154,19 @@ private fun CandidateResolveSection(
 private fun SourceSelector(
     groups: List<SourceCandidateGroup>,
     selectedIndex: Int,
+    listState: LazyListState,
     onSelect: (Int) -> Unit
 ) {
-    FlowRow(
+    LazyRow(
+        state = listState,
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall),
-        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
     ) {
-        groups.forEachIndexed { index, group ->
+        itemsIndexed(groups) { index, group ->
             SourcePill(
                 text = group.source.label,
                 selected = index == selectedIndex,
-                onClick = { onSelect(index) },
-                height = 40.dp,
-                minWidth = 56.dp,
-                textStyle = MaterialTheme.typography.labelMedium,
-                textHorizontalPadding = 8.dp
+                onClick = { onSelect(index) }
             )
         }
     }
