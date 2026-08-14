@@ -51,6 +51,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.OpenInBrowser
@@ -1759,6 +1761,10 @@ private fun EmptyLaunchState() {
 
 @Composable
 private fun AppInfoCard(request: HelperRequest) {
+    // Collapsed by default so the Sources/Variants sections stay visible on
+    // screen; tap the header to expand the request and device details.
+    var expanded by rememberSaveable(request.packageName) { mutableStateOf(false) }
+
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
             modifier = Modifier
@@ -1766,46 +1772,56 @@ private fun AppInfoCard(request: HelperRequest) {
                 .padding(HelperDefaults.ContentPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            AppInfoHeader(request)
+            AppInfoHeader(request, expanded = expanded, onToggle = { expanded = !expanded })
 
-            androidx.compose.material3.HorizontalDivider(
-                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-            )
-
-            AppInfoSection("Request") {
-                val versionLabel = listOfNotNull(
-                    request.requestedVersionName,
-                    request.versionCodeSummary?.let { "build $it" }
-                ).joinToString(" · ").ifBlank { "Any compatible" }
-                AppInfoRow(label = "Version", value = versionLabel)
-                AppInfoRow(label = "Format", value = request.requestedFormatLabel)
-            }
-
-            val abis = request.availableAbis
-            if (abis.isNotEmpty()) {
-                AppInfoSection("Device") {
-                    AppInfoChipRow(label = "ABI", items = abis)
-                }
-            }
-
-            if (request.stockInstallRequired) {
-                Text(
-                    text = "Root mount may require the stock app before Morphe patches it.",
-                    color = MaterialTheme.colorScheme.secondary
+            if (expanded) {
+                androidx.compose.material3.HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                 )
+
+                AppInfoSection("Request") {
+                    val versionLabel = listOfNotNull(
+                        request.requestedVersionName,
+                        request.versionCodeSummary?.let { "build $it" }
+                    ).joinToString(" · ").ifBlank { "Any compatible" }
+                    AppInfoRow(label = "Version", value = versionLabel)
+                    AppInfoRow(label = "Format", value = request.requestedFormatLabel)
+                }
+
+                val abis = request.availableAbis
+                if (abis.isNotEmpty()) {
+                    AppInfoSection("Device") {
+                        AppInfoChipRow(label = "ABI", items = abis)
+                    }
+                }
+
+                if (request.stockInstallRequired) {
+                    Text(
+                        text = "Root mount may require the stock app before Morphe patches it.",
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun AppInfoHeader(request: HelperRequest) {
+private fun AppInfoHeader(
+    request: HelperRequest,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
     var copied by remember(request.packageName) { mutableStateOf(false) }
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(HelperDefaults.SectionCornerRadius))
+            .clickable(onClick = onToggle)
+            .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1854,6 +1870,16 @@ private fun AppInfoHeader(request: HelperRequest) {
                 )
             }
         }
+
+        Icon(
+            imageVector = if (expanded) {
+                Icons.Outlined.ExpandLess
+            } else {
+                Icons.Outlined.ExpandMore
+            },
+            contentDescription = if (expanded) "Collapse" else "Expand",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
