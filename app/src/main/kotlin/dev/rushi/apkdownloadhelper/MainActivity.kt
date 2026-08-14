@@ -231,6 +231,8 @@ class MainActivity : ComponentActivity() {
                     onDownload = ::downloadAndReturn,
                     onPickDownloadedFile = ::returnPickedFile,
                     onUseInstalledApp = ::returnInstalledApp,
+                    onVersionHistory = ::loadVersionHistory,
+                    onDownloadVersion = ::downloadVersion,
                     onClearLogs = { requestLogs.clear() },
                     onCancel = {
                         setResult(Activity.RESULT_CANCELED)
@@ -308,6 +310,202 @@ class MainActivity : ComponentActivity() {
         val activeRequest = request ?: return
         val current = (uiState as? UiState.Ready)?.result ?: initialCandidateResult(activeRequest)
         uiState = UiState.Ready(current.withResolveState(source, option, state))
+    }
+
+    private fun loadVersionHistory(source: DownloadSource) {
+        val activeRequest = request ?: return
+        helperSettings.networkPolicy.blockReason(this)?.let { message ->
+            appendLog(message, LogLevel.Warning)
+            updateHistoryState(source, VersionHistoryState.Error(message))
+            return
+        }
+        updateHistoryState(source, VersionHistoryState.Loading)
+        appendLog("Loading ${source.label} version history.")
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { resolveVersionHistory(activeRequest, source) }
+            }
+            result
+                .onSuccess { candidates ->
+                    appendLog("${source.label} version history loaded: ${candidates.size} versions.")
+                    updateHistoryState(source, VersionHistoryState.Done(candidates))
+                }
+                .onFailure { error ->
+                    val message = sourceFailureMessage(source, error)
+                    appendLog(message, LogLevel.Error)
+                    updateHistoryState(source, VersionHistoryState.Error(message))
+                }
+        }
+    }
+
+    private fun updateHistoryState(source: DownloadSource, state: VersionHistoryState) {
+        val activeRequest = request ?: return
+        val current = (uiState as? UiState.Ready)?.result ?: initialCandidateResult(activeRequest)
+        uiState = UiState.Ready(current.withHistoryState(source, state))
+    }
+
+    private fun downloadVersion(candidate: DownloadCandidate) {
+        val activeRequest = request ?: return
+        appendLog("Resolving ${candidate.versionDisplay} from ${candidate.source.label} for download...")
+        uiState = UiState.Loading
+        lifecycleScope.launch {
+            val resolved = withContext(Dispatchers.IO) {
+                runCatching { resolveHistoryCandidate(activeRequest, candidate) }
+            }
+            resolved
+                .onSuccess { direct ->
+                    if (direct == null) {
+                        val message =
+                            "No direct download was available for ${candidate.versionDisplay} " +
+                                "on ${candidate.source.label}. Open the version page manually."
+                                .withManualModeHint()
+                        appendLog(message, LogLevel.Warning)
+                        uiState = UiState.Error(message)
+                    } else {
+                        downloadAndReturn(direct)
+                    }
+                }
+                .onFailure { error ->
+                    val message = downloadFailureMessage(candidate, error)
+                    appendLog(message, LogLevel.Error)
+                    uiState = UiState.Error(message)
+                }
+        }
+    }
+
+    private fun resolveVersionHistory(
+        request: HelperRequest,
+        source: DownloadSource
+    ): List<DownloadCandidate> = when (source) {
+        DownloadSource.APK_MIRROR -> apkMirrorVersionHistory(request)
+        DownloadSource.UPTODOWN -> uptodownVersionHistory(request)
+        else -> emptyList()
+    }
+
+    private fun apkMirrorVersionHistory(request: HelperRequest): List<DownloadCandidate> {
+        val searchDoc = fetchDocument(apkMirrorPackageSearchUrl(request.packageName))
+        val appPageUrl = resolveApkMirrorAppPage(searchDoc, request) ?: return emptyList()
+        val category = appPageUrl.trimEnd('/').substringAfterLast('/').takeIf(String::isNotBlank)
+            ?: return emptyList()
+
+        val releaseUrls = mutableListOf<String>()
+        for (page in 1..5) {
+            val pageUrl = if (page == 1) {
+                apkMirrorUploadsUrl(appPageUrl)
+            } else {
+                "https://www.apkmirror.com/uploads/page/$page/?appcategory=$category"
+            }
+            val doc = runCatching { fetchDocument(pageUrl, referer = appPageUrl) }.getOrNull() ?: continue
+            val links = apkMirrorReleaseLinks(doc)
+            if (links.isEmpty()) break
+            releaseUrls += links
+        }
+
+        return releaseUrls
+            .distinct()
+            .mapNotNull { releaseUrl ->
+                val versionName = apkMirrorVersionFromReleaseUrl(releaseUrl) ?: return@mapNotNull null
+                DownloadCandidate(
+                    source = DownloadSource.APK_MIRROR,
+                    name = request.appName,
+                    packageName = request.packageName,
+                    versionName = versionName,
+                    versionCode = null,
+                    url = releaseUrl,
+                    fileKind = "web",
+                    option = CandidateOption.LATEST,
+                    directDownload = false,
+                    versionStatus = request.versionStatus(versionName, null),
+                    formatMatches = true,
+                    note = null
+                )
+            }
+            .sortedWith { left, right -> compareVersionNames(right.versionName, left.versionName) }
+    }
+
+    private fun uptodownVersionHistory(request: HelperRequest): List<DownloadCandidate> {
+        val detailUrl = uptodownDetailUrls(request).firstOrNull() ?: return emptyList()
+        val normalizedDetailUrl = detailUrl.trimEnd('/')
+        val downloadPageUrl = "$normalizedDetailUrl/download"
+        val pageDoc = fetchDocument(downloadPageUrl)
+        if (uptodownPackageName(pageDoc) != request.packageName) return emptyList()
+        val dataCode = uptodownDataCode(pageDoc) ?: return emptyList()
+
+        val candidates = buildList {
+            for (page in 1..20) {
+                val entries = runCatching {
+                    gson.fromJson(
+                        fetchText(
+                            "$normalizedDetailUrl/apps/$dataCode/versions/$page",
+                            referer = "$normalizedDetailUrl/versions"
+                        ),
+                        UptodownVersionResponse::class.java
+                    ).data
+                }.getOrDefault(emptyList())
+                if (entries.isEmpty()) break
+
+                entries.forEach { entry ->
+                    val versionName = entry.version?.trim()?.takeIf(String::isNotBlank) ?: return@forEach
+                    val versionPageUrl = uptodownVersionPageUrl(entry) ?: return@forEach
+                    val fileKind = (entry.kindFile ?: entry.titleKindFile ?: "apk").lowercase(Locale.US)
+                    add(
+                        DownloadCandidate(
+                            source = DownloadSource.UPTODOWN,
+                            name = request.appName,
+                            packageName = request.packageName,
+                            versionName = versionName,
+                            versionCode = null,
+                            url = versionPageUrl,
+                            fileKind = fileKind,
+                            option = CandidateOption.LATEST,
+                            directDownload = false,
+                            versionStatus = request.versionStatus(versionName, null),
+                            formatMatches = request.acceptsFormat(fileKind),
+                            note = null
+                        )
+                    )
+                }
+            }
+        }
+
+        return candidates
+            .distinctBy { it.versionName?.normalizedVersionName() }
+            .sortedWith { left, right -> compareVersionNames(right.versionName, left.versionName) }
+    }
+
+    private fun resolveHistoryCandidate(
+        request: HelperRequest,
+        candidate: DownloadCandidate
+    ): DownloadCandidate? = when (candidate.source) {
+        DownloadSource.APK_MIRROR -> apkMirrorCandidatesFromReleaseUrl(
+            request = request,
+            releaseUrl = candidate.url,
+            versionName = candidate.versionName,
+            option = CandidateOption.LATEST
+        ).firstOrNull { it.directDownload }
+
+        DownloadSource.UPTODOWN -> {
+            val pageDoc = fetchDocument(candidate.url)
+            val directUrl = uptodownDownloadUrlFromPage(pageDoc)
+            if (directUrl == null) {
+                null
+            } else {
+                candidate.copy(
+                    url = directUrl,
+                    directDownload = true,
+                    files = listOf(
+                        CandidateDownloadFile(
+                            url = directUrl,
+                            fileName = "${candidate.packageName}-${candidate.versionName ?: "latest"}-uptodown.${candidate.fileKind}"
+                                .sanitizeFileName(),
+                            referer = candidate.url
+                        )
+                    )
+                )
+            }
+        }
+
+        else -> null
     }
 
     private fun startRequestLog(request: HelperRequest?) {
@@ -3002,6 +3200,8 @@ private fun HelperScreen(
     onDownload: (DownloadCandidate) -> Unit,
     onPickDownloadedFile: (DownloadCandidate, Uri?) -> Unit,
     onUseInstalledApp: (DownloadCandidate) -> Unit,
+    onVersionHistory: (DownloadSource) -> Unit,
+    onDownloadVersion: (DownloadCandidate) -> Unit,
     onClearLogs: () -> Unit,
     onCancel: () -> Unit
 ) {
@@ -3117,6 +3317,8 @@ private fun HelperScreen(
                             onDownload = onDownload,
                             onPickDownloadedFile = openDownloadedFilePicker,
                             onUseInstalledApp = onUseInstalledApp,
+                            onVersionHistory = onVersionHistory,
+                            onDownloadVersion = onDownloadVersion,
                             installedPackageRefreshToken = installedPackageRefreshToken
                         )
                     }
@@ -3417,6 +3619,8 @@ private fun SourceTabs(
     onDownload: (DownloadCandidate) -> Unit,
     onPickDownloadedFile: (DownloadCandidate) -> Unit,
     onUseInstalledApp: (DownloadCandidate) -> Unit,
+    onVersionHistory: (DownloadSource) -> Unit,
+    onDownloadVersion: (DownloadCandidate) -> Unit,
     installedPackageRefreshToken: Int
 ) {
     val groups = result.sourceGroups
@@ -3514,6 +3718,112 @@ private fun SourceTabs(
                 onPickDownloadedFile = onPickDownloadedFile,
                 onUseInstalledApp = onUseInstalledApp,
                 installedPackageRefreshToken = installedPackageRefreshToken
+            )
+
+            if (selectedGroup.source == DownloadSource.APK_MIRROR ||
+                selectedGroup.source == DownloadSource.UPTODOWN
+            ) {
+                SectionHeader("Version history")
+                VersionHistorySection(
+                    state = selectedGroup.history,
+                    onResolve = { onVersionHistory(selectedGroup.source) },
+                    onDownloadVersion = onDownloadVersion
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VersionHistorySection(
+    state: VersionHistoryState,
+    onResolve: () -> Unit,
+    onDownloadVersion: (DownloadCandidate) -> Unit
+) {
+    when (state) {
+        VersionHistoryState.Idle -> {
+            HelperOutlinedButton(
+                text = "Load versions",
+                onClick = onResolve,
+                icon = Icons.Outlined.Search,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        VersionHistoryState.Loading -> {
+            HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(HelperDefaults.ContentPadding),
+                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Text("Loading versions...", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+
+        is VersionHistoryState.Error -> {
+            InfoCard(state.message)
+            HelperOutlinedButton(
+                text = "Try again",
+                onClick = onResolve,
+                icon = Icons.Outlined.Refresh,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+
+        is VersionHistoryState.Done -> {
+            if (state.candidates.isEmpty()) {
+                InfoCard("No version list was available for this source.")
+            } else {
+                state.candidates.forEach { candidate ->
+                    VersionHistoryRow(
+                        candidate = candidate,
+                        onDownloadVersion = { onDownloadVersion(candidate) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun VersionHistoryRow(
+    candidate: DownloadCandidate,
+    onDownloadVersion: () -> Unit
+) {
+    HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = candidate.versionDisplay,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = candidate.fileKind.uppercase(Locale.US),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            HelperButton(
+                text = "Download",
+                onClick = onDownloadVersion,
+                icon = Icons.Outlined.Download,
+                modifier = Modifier.widthIn(min = 120.dp)
             )
         }
     }
@@ -4216,13 +4526,23 @@ private data class CandidateResult(
             }
         }
     )
+
+    fun withHistoryState(
+        source: DownloadSource,
+        state: VersionHistoryState
+    ): CandidateResult = copy(
+        sourceGroups = sourceGroups.map { group ->
+            if (group.source == source) group.copy(history = state) else group
+        }
+    )
 }
 
 private data class SourceCandidateGroup(
     val source: DownloadSource,
     val manual: List<DownloadCandidate>,
     val recommended: ResolveState,
-    val latest: ResolveState
+    val latest: ResolveState,
+    val history: VersionHistoryState = VersionHistoryState.Idle
 )
 
 private data class ResolveOutcome(
@@ -4239,6 +4559,13 @@ private sealed interface ResolveState {
         val message: String,
         val fallbackCandidate: DownloadCandidate? = null
     ) : ResolveState
+}
+
+private sealed interface VersionHistoryState {
+    data object Idle : VersionHistoryState
+    data object Loading : VersionHistoryState
+    data class Done(val candidates: List<DownloadCandidate>) : VersionHistoryState
+    data class Error(val message: String) : VersionHistoryState
 }
 
 private data class ApkMirrorLatestInfo(
