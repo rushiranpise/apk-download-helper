@@ -1644,8 +1644,8 @@ private fun HelperSettingsCard(
                 )
             }
             SettingSwitchRow(
-                title = "Clean up hand-off files",
-                description = "Remove temporary APKs after Morphe gets them, and clear old cache files on launch.",
+                title = "Clear storage, cache & downloads",
+                description = "Remove temporary APKs after handing off to Morphe, and clear old cache files on launch.",
                 checked = settings.deleteTemporaryAfterHandoff,
                 onCheckedChange = {
                     onSettingsChange(settings.copy(deleteTemporaryAfterHandoff = it))

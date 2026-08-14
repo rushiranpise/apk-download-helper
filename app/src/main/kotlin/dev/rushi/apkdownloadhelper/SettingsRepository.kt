@@ -27,11 +27,11 @@ internal enum class DownloadLocation(
     val description: String
 ) {
     TEMPORARY(
-        title = "Hand off only",
-        description = "Keep the file in Helper's cache, send it to Morphe, then clean it up later."
+        title = "Store in cache",
+        description = "Keep the file in Helper's cache and hand it off to Morphe — no visible copy is left behind."
     ),
     DOWNLOADS(
-        title = "Keep a copy",
+        title = "Store in downloads",
         description = "Save a visible copy in Downloads/APK Download Helper after the file checks out."
     )
 }
