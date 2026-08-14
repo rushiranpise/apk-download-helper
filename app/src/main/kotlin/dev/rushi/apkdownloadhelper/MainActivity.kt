@@ -22,6 +22,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -3304,6 +3305,12 @@ private fun HelperScreen(
                 }
             }
 
+            if (state is UiState.Ready) {
+                item {
+                    SourceHealthCard(state.result.sourceHealth())
+                }
+            }
+
             when (state) {
                 UiState.Idle,
                 UiState.Loading -> item { LoadingState() }
@@ -3330,6 +3337,106 @@ private fun HelperScreen(
                     ErrorState(message = state.message, onRefresh = onRefresh, onCancel = onCancel)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SourceHealthCard(entries: List<SourceHealthEntry>) {
+    val hasFailures = entries.any { it.status == SourceHealthStatus.Failed }
+    val hasActivity = entries.any { it.status == SourceHealthStatus.Checking }
+    var expanded by remember(hasFailures) { mutableStateOf(hasFailures) }
+    val failedCount = entries.count { it.status == SourceHealthStatus.Failed }
+    val okCount = entries.count { it.status == SourceHealthStatus.Ok }
+
+    val summary = when {
+        hasActivity -> "Checking sources..."
+        failedCount > 0 && okCount > 0 -> "$failedCount source${if (failedCount == 1) "" else "s"} had problems, $okCount OK"
+        failedCount > 0 -> "$failedCount source${if (failedCount == 1) "" else "s"} had problems"
+        okCount > 0 -> "$okCount source${if (okCount == 1) "" else "s"} available"
+        else -> "Sources not checked yet"
+    }
+
+    HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text("Source health", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = summary,
+                        color = if (hasFailures) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                HelperOutlinedButton(
+                    text = if (expanded) "Hide" else "Show",
+                    onClick = { expanded = !expanded }
+                )
+            }
+
+            if (expanded) {
+                entries.forEach { entry ->
+                    SourceHealthRow(entry)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceHealthRow(entry: SourceHealthEntry) {
+    val (dotColor, statusText) = when (entry.status) {
+        SourceHealthStatus.Ok -> Color(0xFF66BB6A) to "Available"
+        SourceHealthStatus.Checking -> Color(0xFFFFD166) to "Checking..."
+        SourceHealthStatus.Failed -> MaterialTheme.colorScheme.error to (entry.message ?: "Failed")
+        SourceHealthStatus.NoResult -> MaterialTheme.colorScheme.onSurfaceVariant to "No matching candidates"
+        SourceHealthStatus.NotChecked -> MaterialTheme.colorScheme.outline to "Not checked"
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 5.dp)
+                .size(8.dp)
+                .clip(RoundedCornerShape(50))
+                .background(dotColor)
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = entry.source.label,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = statusText,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = if (entry.status == SourceHealthStatus.Failed) 3 else 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
@@ -4567,6 +4674,41 @@ private sealed interface VersionHistoryState {
     data class Done(val candidates: List<DownloadCandidate>) : VersionHistoryState
     data class Error(val message: String) : VersionHistoryState
 }
+
+private enum class SourceHealthStatus {
+    NotChecked,
+    Checking,
+    Ok,
+    NoResult,
+    Failed
+}
+
+private data class SourceHealthEntry(
+    val source: DownloadSource,
+    val status: SourceHealthStatus,
+    val message: String? = null
+)
+
+private fun CandidateResult.sourceHealth(): List<SourceHealthEntry> =
+    sourceGroups.map { group ->
+        val states = listOf(group.recommended, group.latest)
+        val failures = states.filterIsInstance<ResolveState.Error>()
+        val loadedCandidates = states.filterIsInstance<ResolveState.Done>().map { it.candidates }
+        val anyLoading = states.any { it is ResolveState.Loading }
+        when {
+            failures.isNotEmpty() -> {
+                SourceHealthEntry(
+                    source = group.source,
+                    status = SourceHealthStatus.Failed,
+                    message = failures.first().message
+                )
+            }
+            loadedCandidates.any { it.isNotEmpty() } -> SourceHealthEntry(group.source, SourceHealthStatus.Ok)
+            loadedCandidates.isNotEmpty() -> SourceHealthEntry(group.source, SourceHealthStatus.NoResult)
+            anyLoading -> SourceHealthEntry(group.source, SourceHealthStatus.Checking)
+            else -> SourceHealthEntry(group.source, SourceHealthStatus.NotChecked)
+        }
+    }
 
 private data class ApkMirrorLatestInfo(
     val versionName: String?,
