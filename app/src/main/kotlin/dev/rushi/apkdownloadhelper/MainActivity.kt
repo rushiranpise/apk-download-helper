@@ -1782,7 +1782,16 @@ private fun SourceTabs(
             groups = groups,
             selectedIndex = pagerState.currentPage,
             onSelect = { index ->
-                scope.launch { pagerState.animateScrollToPage(index) }
+                scope.launch {
+                    // Slide for adjacent sources (feels like a swipe), but jump
+                    // straight to distant ones instead of dragging the pager
+                    // through every source in between.
+                    if (abs(index - pagerState.currentPage) <= 1) {
+                        pagerState.animateScrollToPage(index)
+                    } else {
+                        pagerState.scrollToPage(index)
+                    }
+                }
             }
         )
 
