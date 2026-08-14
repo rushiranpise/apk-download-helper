@@ -707,6 +707,14 @@ class MainActivity : ComponentActivity() {
                         "Download is ready; ${event.result.callerPackage} can request it again to receive the file.",
                         LogLevel.Warning
                     )
+                    // Opened standalone with no caller to return to — leave the
+                    // Downloading state so the screen is usable again.
+                    val activeRequest = request
+                    uiState = if (activeRequest != null) {
+                        UiState.Ready(initialCandidateResult(activeRequest))
+                    } else {
+                        UiState.Idle
+                    }
                 }
             }
             is DownloadJobManager.Event.Failed -> {
