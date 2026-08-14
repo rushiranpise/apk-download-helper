@@ -278,7 +278,10 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
             .normalizedHttpUrlOrNull()
             ?: return null
         val versionCode = apkComboVersionCode(href)
-        val fileKind = fileKindFromUrl(href)
+        // Variant hrefs are obfuscated tokens that often carry no readable kind
+        // marker (fileKindFromUrl then defaults to "apk" and rejects split-archive
+        // requests). Trust the visible .vtype badge (e.g. "XAPK") when present.
+        val fileKind = apkComboVariantFileKind(variant) ?: fileKindFromUrl(href)
         if (!request.acceptsFormat(fileKind)) return null
         val variantLabel = apkComboVariantLabel(variant)
         val fileName = "${request.packageName}-${versionName ?: "latest"}-apkcombo${variantLabel.variantFileSuffix()}.$fileKind"
@@ -308,6 +311,21 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
                 )
             )
         )
+    }
+
+    private fun apkComboVariantFileKind(variant: Element): String? {
+        val text = variant.selectFirst(".vtype")
+            ?.text()
+            ?.lowercase(Locale.US)
+            ?.takeIf(String::isNotBlank)
+            ?: return null
+        return when {
+            "apks" in text -> "apks"
+            "xapk" in text -> "xapk"
+            "apkm" in text -> "apkm"
+            "apk" in text -> "apk"
+            else -> null
+        }
     }
 
     private fun apkComboVariantLabel(variant: Element): String? =

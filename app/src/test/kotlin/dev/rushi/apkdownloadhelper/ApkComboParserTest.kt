@@ -22,6 +22,18 @@ class ApkComboParserTest {
         </body></html>
     """.trimIndent()
 
+    private val obfuscatedVariantPageHtml = """
+        <html><head>
+          <script type="application/ld+json">{"softwareVersion": "9.2.1"}</script>
+        </head><body>
+          <a href="V0ZabGNtZHZaMjQ9P2tleT1hYmNkZWY=" class="variant" rel="nofollow noreferrer">
+            <div class="info">
+              <div class="header"><span class="vername">App 9.2.1</span><span class="vtype"><span class="type-xapk">XAPK</span></span></div>
+            </div>
+          </a>
+        </body></html>
+    """.trimIndent()
+
     private val gatedPageHtml = """
         <html><head>
           <script>
@@ -63,6 +75,35 @@ class ApkComboParserTest {
         // No Referer: APKCombo's /d links redirect to download.pureapk.com, which
         // bounces requests carrying an apkcombo.com Referer to an HTML page.
         assertNull(candidate.files[0].referer)
+    }
+
+    @Test
+    fun findCandidates_latest_usesVtypeBadgeWhenHrefIsObfuscated() = runBlocking {
+        val parser = ApkComboParser(
+            testParserContext(
+                pages = mapOf(
+                    pageUrl to obfuscatedVariantPageHtml,
+                    checkInUrl to "key=abc"
+                )
+            )
+        )
+
+        // XAPK-only request: without the .vtype badge, the obfuscated href would
+        // resolve to "apk" and the variant would be rejected.
+        val candidates = parser.findCandidates(
+            request = testRequest(
+                packageName = packageName,
+                requestedFileType = "XAPK",
+                allowSplitArchive = true
+            ),
+            option = CandidateOption.LATEST
+        )
+
+        assertEquals(1, candidates.size)
+        val candidate = candidates[0]
+        assertTrue(candidate.directDownload)
+        assertEquals("xapk", candidate.fileKind)
+        assertTrue(candidate.url.contains("V0ZabGNtZHZaMjQ9P2tleT1hYmNkZWY="))
     }
 
     @Test
