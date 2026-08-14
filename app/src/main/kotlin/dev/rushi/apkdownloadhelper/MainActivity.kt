@@ -1896,6 +1896,10 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.Recommended -> {
+                InfoCard(
+                    "Recommended: finds the exact version Morphe requested on this source, " +
+                        "then download it to return to Morphe."
+                )
                 CandidateResolveSection(
                     request = request,
                     state = group.recommended,
@@ -1920,7 +1924,12 @@ private fun SourcePageContent(
                     DownloadSource.PLAY -> {
                         InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
                     }
-                    else -> Unit
+                    else -> {
+                        InfoCard(
+                            "Latest: finds the newest version of this app on the source, " +
+                                "then download it to return to Morphe."
+                        )
+                    }
                 }
                 CandidateResolveSection(
                     request = request,
@@ -1939,6 +1948,10 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.History -> {
+                InfoCard(
+                    "Version history: lists every version this source offers, " +
+                        "then download any of them to return to Morphe."
+                )
                 VersionHistorySection(
                     state = group.history,
                     onResolve = { onVersionHistory(group.source) },
