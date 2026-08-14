@@ -23,15 +23,19 @@ internal class FakeApkPureApi(
     ): ApkPureUpdateResponse = response
 }
 
-internal class FakeAptoideApi : AptoideApi {
+internal class FakeAptoideApi(
+    var appByPackage: AptoideApp = AptoideApp(),
+    var searchResults: List<AptoideApp> = emptyList(),
+    var appById: AptoideApp = AptoideApp()
+) : AptoideApi {
     override suspend fun searchApps(request: AptoideSearchRequest): AptoideSearchResponse =
-        AptoideSearchResponse()
+        AptoideSearchResponse(datalist = AptoideDataList(list = searchResults))
 
     override suspend fun getAppByPackage(packageName: String): AptoideGetAppResponse =
-        AptoideGetAppResponse()
+        AptoideGetAppResponse(nodes = AptoideNodes(meta = AptoideMetaNode(data = appByPackage)))
 
     override suspend fun getAppById(appId: Long): AptoideGetAppResponse =
-        AptoideGetAppResponse()
+        AptoideGetAppResponse(nodes = AptoideNodes(meta = AptoideMetaNode(data = appById)))
 
     override suspend fun listAppVersionsByPackage(packageName: String): AptoideVersionListResponse =
         AptoideVersionListResponse()

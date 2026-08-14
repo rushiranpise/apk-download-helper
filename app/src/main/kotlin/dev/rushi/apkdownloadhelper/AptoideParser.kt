@@ -1,8 +1,6 @@
 package dev.rushi.apkdownloadhelper
 
-import android.net.Uri
 import java.net.URLEncoder
-import java.util.Locale
 
 internal class AptoideParser(private val ctx: SourceParserContext) : ApkSourceParser {
     override val source: DownloadSource = DownloadSource.APTOIDE
@@ -20,6 +18,56 @@ internal class AptoideParser(private val ctx: SourceParserContext) : ApkSourcePa
     }
 
     override fun searchUrl(packageName: String): String? = aptoideSearchUrl(packageName)
+
+    override suspend fun resolveHistory(request: HelperRequest): List<DownloadCandidate> {
+        val appPageUrl = runCatching { resolveAptoideAppPageUrl(request) }.getOrNull()
+            ?: return emptyList()
+        val versionsUrl = appPageUrl.trimEnd('/').removeSuffix("/app") + "/versions"
+        val versions = aptoideVersionsFromPage(versionsUrl, request.packageName)
+
+        return versions
+            .distinctBy(AptoideVersionItem::id)
+            .mapNotNull { item ->
+                val versionName = item.vername.ifBlank { item.name }.ifBlank { return@mapNotNull null }
+                DownloadCandidate(
+                    source = DownloadSource.APTOIDE,
+                    name = request.appName,
+                    packageName = request.packageName,
+                    versionName = versionName,
+                    versionCode = item.vercode.takeIf { it > 0L },
+                    // Synthetic per-version URL; resolveHistoryCandidate re-reads the id.
+                    url = "$versionsUrl/${item.id}",
+                    fileKind = "apk",
+                    option = CandidateOption.LATEST,
+                    directDownload = false,
+                    versionStatus = request.versionStatus(versionName, item.vercode.takeIf { it > 0L }),
+                    formatMatches = request.acceptsFormat("apk"),
+                    note = null
+                )
+            }
+            .sortedWith { left, right -> compareVersionNames(right.versionName, left.versionName) }
+    }
+
+    override suspend fun resolveHistoryCandidate(
+        request: HelperRequest,
+        candidate: DownloadCandidate
+    ): DownloadCandidate? {
+        val versionId = candidate.url.substringAfterLast('/').toLongOrNull() ?: return null
+        val app = runCatching { aptoideApi.getAppById(versionId).nodes.meta.data }
+            .getOrNull()
+            ?.takeIf { it.packageName == request.packageName }
+            ?: return null
+        val resolved = aptoideCandidateFromApp(request, app, CandidateOption.LATEST) ?: return null
+
+        return if (resolved.versionName == null && candidate.versionName != null) {
+            resolved.copy(
+                versionName = candidate.versionName,
+                versionStatus = request.versionStatus(candidate.versionName, candidate.versionCode)
+            )
+        } else {
+            resolved
+        }
+    }
 
     private suspend fun aptoideLatestCandidate(request: HelperRequest): DownloadCandidate? {
         val historyLatest = runCatching { aptoideLatestVersionHistoryCandidate(request) }.getOrNull()
@@ -163,8 +211,8 @@ internal class AptoideParser(private val ctx: SourceParserContext) : ApkSourcePa
         listOf(app.urls.w, app.urls.m)
             .firstNotNullOfOrNull(String::normalizedHttpUrlOrNull)
             ?.let { url ->
-                val uri = Uri.parse(url)
-                "${uri.scheme}://${uri.authority}/app"
+                runCatching { java.net.URI(url) }.getOrNull()
+                    ?.let { uri -> "${uri.scheme}://${uri.host}/app" }
             }
 
     private fun aptoideCandidateFromWebAppPage(

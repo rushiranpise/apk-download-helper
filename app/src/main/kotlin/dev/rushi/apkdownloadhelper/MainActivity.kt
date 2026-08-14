@@ -1915,7 +1915,9 @@ private fun SourceTabs(
             )
 
             if (selectedGroup.source == DownloadSource.APK_MIRROR ||
-                selectedGroup.source == DownloadSource.UPTODOWN
+                selectedGroup.source == DownloadSource.UPTODOWN ||
+                selectedGroup.source == DownloadSource.APK_COMBO ||
+                selectedGroup.source == DownloadSource.APTOIDE
             ) {
                 SectionHeader("Version history")
                 VersionHistorySection(

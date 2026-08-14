@@ -20,6 +20,71 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
 
     override fun searchUrl(packageName: String): String? = apkComboSearchUrl(packageName)
 
+    override suspend fun resolveHistory(request: HelperRequest): List<DownloadCandidate> {
+        val latestPageUrl = apkComboDownloadPageUrls(request).firstOrNull() ?: return emptyList()
+        val oldVersionsUrls = listOf(
+            apkComboOldVersionsUrl(request, latestPageUrl),
+            "https://apkcombo.com/${request.appName.slugForUrl()}/${request.packageName}/old-versions/"
+        ).distinct()
+
+        for (oldVersionsUrl in oldVersionsUrls) {
+            val doc = runCatching { fetchDocument(oldVersionsUrl) }.getOrNull() ?: continue
+            val items = doc.select("a.ver-item[href]")
+            if (items.isEmpty()) continue
+
+            return items
+                .mapNotNull { item ->
+                    val versionName = apkComboVersionFromText(item.text())
+                        ?: item.text().trim().takeIf(String::isNotBlank)
+                        ?: return@mapNotNull null
+                    val pageUrl = item.absUrl("href")
+                        .ifBlank { "https://apkcombo.com${item.attr("href")}" }
+                        .normalizedHttpUrlOrNull()
+                        ?: return@mapNotNull null
+                    DownloadCandidate(
+                        source = DownloadSource.APK_COMBO,
+                        name = request.appName,
+                        packageName = request.packageName,
+                        versionName = versionName,
+                        versionCode = null,
+                        url = pageUrl,
+                        fileKind = "web",
+                        option = CandidateOption.LATEST,
+                        directDownload = false,
+                        versionStatus = request.versionStatus(versionName, null),
+                        formatMatches = true,
+                        note = null
+                    )
+                }
+                .sortedWith { left, right -> compareVersionNames(right.versionName, left.versionName) }
+        }
+
+        return emptyList()
+    }
+
+    override suspend fun resolveHistoryCandidate(
+        request: HelperRequest,
+        candidate: DownloadCandidate
+    ): DownloadCandidate? {
+        val resolved = runCatching {
+            apkComboCandidatesFromPage(
+                request = request,
+                pageUrl = candidate.url,
+                option = CandidateOption.LATEST
+            ).firstOrNull { it.directDownload }
+        }.getOrNull()
+            ?: return null
+
+        return if (resolved.versionName == null && candidate.versionName != null) {
+            resolved.copy(
+                versionName = candidate.versionName,
+                versionStatus = request.versionStatus(candidate.versionName, null)
+            )
+        } else {
+            resolved
+        }
+    }
+
     private fun apkComboLatestCandidates(request: HelperRequest): List<DownloadCandidate> =
         apkComboDownloadPageUrls(request)
             .firstNotNullOfOrNull { pageUrl ->
