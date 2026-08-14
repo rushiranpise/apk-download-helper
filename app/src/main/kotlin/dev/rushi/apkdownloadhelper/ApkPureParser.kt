@@ -87,32 +87,7 @@ internal class ApkPureParser(private val ctx: SourceParserContext) : ApkSourcePa
 
         val apiLatestCandidates = response.app_update_response
             .filter { it.package_name == request.packageName }
-            .mapNotNull { item ->
-                val url = item.asset.url.replace("http://", "https://").normalizedHttpUrlOrNull()
-                    ?: return@mapNotNull null
-                val fileKind = if (url.contains("/XAPK", ignoreCase = true)) "xapk" else "apk"
-
-                DownloadCandidate(
-                    source = DownloadSource.APK_PURE,
-                    name = item.label.ifBlank { request.appName },
-                    packageName = item.package_name,
-                    versionName = item.version_name,
-                    versionCode = item.version_code,
-                    url = url,
-                    fileKind = fileKind,
-                    option = CandidateOption.LATEST,
-                    directDownload = true,
-                    versionStatus = request.versionStatus(item.version_name, item.version_code),
-                    formatMatches = request.acceptsFormat(fileKind),
-                    files = listOf(
-                        CandidateDownloadFile(
-                            url = url,
-                            fileName = "${item.package_name}-${item.version_name}-apkpure.$fileKind"
-                                .sanitizeFileName()
-                        )
-                    )
-                )
-            }
+            .mapNotNull { item -> apkPureApiCandidate(item, request, CandidateOption.LATEST) }
 
         val appPageUrl = runCatching { apkPureAppPageUrl(request) }
             .onFailure { Log.w(TAG, "APKPure app page resolve failed", it) }
@@ -139,15 +114,72 @@ internal class ApkPureParser(private val ctx: SourceParserContext) : ApkSourcePa
         return apiLatestCandidates + listOfNotNull(webLatestCandidate)
     }
 
-    private fun apkPureRequestedCandidate(request: HelperRequest): DownloadCandidate? {
+    private fun apkPureApiCandidate(
+        item: ApkPureAppUpdate,
+        request: HelperRequest,
+        option: CandidateOption
+    ): DownloadCandidate? {
+        val url = item.asset.url.replace("http://", "https://").normalizedHttpUrlOrNull()
+            ?: return null
+        val fileKind = if (url.contains("/XAPK", ignoreCase = true)) "xapk" else "apk"
+
+        return DownloadCandidate(
+            source = DownloadSource.APK_PURE,
+            name = item.label.ifBlank { request.appName },
+            packageName = item.package_name,
+            versionName = item.version_name,
+            versionCode = item.version_code,
+            url = url,
+            fileKind = fileKind,
+            option = option,
+            directDownload = true,
+            versionStatus = request.versionStatus(item.version_name, item.version_code),
+            formatMatches = request.acceptsFormat(fileKind),
+            files = listOf(
+                CandidateDownloadFile(
+                    url = url,
+                    fileName = "${item.package_name}-${item.version_name}-apkpure.$fileKind"
+                        .sanitizeFileName()
+                )
+            )
+        )
+    }
+
+    private suspend fun apkPureRequestedCandidate(request: HelperRequest): DownloadCandidate? {
         val appPageUrl = runCatching { apkPureAppPageUrl(request) }
             .onFailure { Log.w(TAG, "APKPure app page resolve failed", it) }
             .getOrNull()
-            ?: return null
+        val webCandidate = appPageUrl?.let { url ->
+            runCatching { apkPureRequestedCandidate(request, url) }
+                .onFailure { Log.w(TAG, "APKPure requested version resolve failed", it) }
+                .getOrNull()
+        }
+        if (webCandidate != null) return webCandidate
 
-        return runCatching { apkPureRequestedCandidate(request, appPageUrl) }
-            .onFailure { Log.w(TAG, "APKPure requested version resolve failed", it) }
+        // The web versions page can be blocked (HTTP 410) for apps whose listing
+        // APKPure removed. The update API still serves the exact requested
+        // version in that case — fall back to it before giving up.
+        return runCatching { apkPureApiRequestedCandidate(request) }
+            .onFailure { Log.w(TAG, "APKPure requested version API resolve failed", it) }
             .getOrNull()
+    }
+
+    private suspend fun apkPureApiRequestedCandidate(request: HelperRequest): DownloadCandidate? {
+        if (!request.hasRequestedVersionRequest) return null
+        val response = apkPureApi.getAppUpdate(
+            header = gson.toJson(ApkPureDeviceHeader()),
+            request = ApkPureUpdateRequest(
+                app_info_for_update = listOf(
+                    ApkPureAppInfo(package_name = request.packageName, version_code = 0L)
+                )
+            )
+        )
+        return response.app_update_response
+            .firstOrNull { item ->
+                item.package_name == request.packageName &&
+                    request.matchesRequestedVersion(item.version_name, item.version_code)
+            }
+            ?.let { item -> apkPureApiCandidate(item, request, CandidateOption.REQUESTED) }
     }
 
     private fun apkPureInfoUrl(packageName: String): String =
