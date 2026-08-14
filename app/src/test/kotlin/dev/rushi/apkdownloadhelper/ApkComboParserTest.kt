@@ -131,7 +131,7 @@ class ApkComboParserTest {
     }
 
     @Test
-    fun findCandidates_skipsVariantWhenFormatRejected() = runBlocking {
+    fun findCandidates_offersMismatchedFormatInsteadOfEmpty() = runBlocking {
         val parser = ApkComboParser(
             testParserContext(
                 pages = mapOf(
@@ -141,7 +141,9 @@ class ApkComboParserTest {
             )
         )
 
-        // XAPK-only request: the APK variant must be filtered out.
+        // XAPK-only request against an APK variant: no longer dropped silently.
+        // The variant is offered with formatMatches=false so the UI can flag the
+        // mismatch, matching how APKMirror/APKPure handle it.
         val candidates = parser.findCandidates(
             request = testRequest(
                 packageName = packageName,
@@ -151,6 +153,45 @@ class ApkComboParserTest {
             option = CandidateOption.LATEST
         )
 
-        assertTrue(candidates.isEmpty())
+        assertEquals(1, candidates.size)
+        val candidate = candidates[0]
+        assertTrue(candidate.directDownload)
+        assertTrue(!candidate.formatMatches)
+        assertEquals("apk", candidate.fileKind)
+    }
+
+    @Test
+    fun findCandidates_prefersMatchingFormatOverMismatch() = runBlocking {
+        // Page offers both an APK variant (matches) and an XAPK variant (mismatch
+        // for an APK-only request). Only the matching one should be returned.
+        val mixedPageHtml = """
+            <html><head>
+              <script type="application/ld+json">{"softwareVersion": "9.2.1"}</script>
+            </head><body>
+              <a class="variant" href="$variantHref" data-arch="arm64-v8a" title="arm64-v8a">arm64-v8a</a>
+              <a href="V0ZabGNtZHZaMjQ9P2tleT1hYmNkZWY=" class="variant" rel="nofollow noreferrer">
+                <div class="info">
+                  <div class="header"><span class="vername">App 9.2.1</span><span class="vtype"><span class="type-xapk">XAPK</span></span></div>
+                </div>
+              </a>
+            </body></html>
+        """.trimIndent()
+        val parser = ApkComboParser(
+            testParserContext(
+                pages = mapOf(
+                    pageUrl to mixedPageHtml,
+                    checkInUrl to "key=abc"
+                )
+            )
+        )
+
+        val candidates = parser.findCandidates(
+            request = testRequest(packageName = packageName),
+            option = CandidateOption.LATEST
+        )
+
+        assertEquals(1, candidates.size)
+        assertTrue(candidates[0].formatMatches)
+        assertEquals("apk", candidates[0].fileKind)
     }
 }

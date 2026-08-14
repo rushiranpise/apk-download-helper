@@ -223,7 +223,7 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
         val checkIn = fetchText("https://apkcombo.com/checkin", referer = pageUrl).trim()
         val versionName = apkComboVersion(doc, pageUrl) ?: request.versionName.takeIf { option == CandidateOption.REQUESTED }
 
-        val variants = doc.select("a.variant[href]")
+        val allVariants = doc.select("a.variant[href]")
             .mapNotNull { variant ->
                 apkComboCandidateFromVariant(
                     request = request,
@@ -231,11 +231,17 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
                     option = option,
                     versionName = versionName,
                     checkIn = checkIn,
-                    variant = variant
+                    variant = variant,
+                    allowFormatMismatch = true
                 )
             }
             .distinctBy(DownloadCandidate::identityKey)
-        if (variants.isNotEmpty()) return variants
+        // Prefer variants that match the requested format; if the page only offers
+        // another kind (e.g. APKS requested but only XAPK variants), offer those
+        // anyway and let the UI flag the format mismatch, like other sources do.
+        val matchingVariants = allVariants.filter { it.formatMatches }
+        if (matchingVariants.isNotEmpty()) return matchingVariants
+        if (allVariants.isNotEmpty()) return allVariants
 
         // No variant links in the HTML: APKCombo gates some downloads behind a
         // reCAPTCHA that the app cannot solve. Surface that honestly instead of
@@ -271,7 +277,8 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
         option: CandidateOption,
         versionName: String?,
         checkIn: String,
-        variant: Element
+        variant: Element,
+        allowFormatMismatch: Boolean = false
     ): DownloadCandidate? {
         val href = variant.absUrl("href").ifBlank { "https://apkcombo.com${variant.attr("href")}" }
         val downloadUrl = (if (checkIn.isNotBlank()) "$href&$checkIn" else href)
@@ -282,7 +289,7 @@ internal class ApkComboParser(private val ctx: SourceParserContext) : ApkSourceP
         // marker (fileKindFromUrl then defaults to "apk" and rejects split-archive
         // requests). Trust the visible .vtype badge (e.g. "XAPK") when present.
         val fileKind = apkComboVariantFileKind(variant) ?: fileKindFromUrl(href)
-        if (!request.acceptsFormat(fileKind)) return null
+        if (!request.acceptsFormat(fileKind) && !allowFormatMismatch) return null
         val variantLabel = apkComboVariantLabel(variant)
         val fileName = "${request.packageName}-${versionName ?: "latest"}-apkcombo${variantLabel.variantFileSuffix()}.$fileKind"
             .sanitizeFileName()
