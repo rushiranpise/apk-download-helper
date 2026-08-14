@@ -223,6 +223,11 @@ internal class UptodownParser(private val ctx: SourceParserContext) : ApkSourceP
             directDownload = !externalUrl.isNullOrBlank(),
             versionStatus = request.versionStatus(versionName, null),
             formatMatches = request.acceptsFormat(fileKind),
+            note = if (externalUrl.isNullOrBlank() && uptodownPageUsesTurnstile(doc)) {
+                "Uptodown now requires solving a captcha before it reveals the download link. Open the link and download manually."
+            } else {
+                null
+            },
             files = externalUrl
                 ?.takeIf(String::isNotBlank)
                 ?.let {
@@ -349,6 +354,11 @@ internal class UptodownParser(private val ctx: SourceParserContext) : ApkSourceP
             directDownload = directUrl != null,
             versionStatus = request.versionStatus(versionName, null),
             formatMatches = request.acceptsFormat(fileKind),
+            note = if (directUrl == null && uptodownPageUsesTurnstile(pageDoc)) {
+                "Uptodown now requires solving a captcha before it reveals the download link. Open the link and download manually."
+            } else {
+                null
+            },
             files = directUrl
                 ?.let {
                     listOf(
@@ -491,6 +501,9 @@ internal class UptodownParser(private val ctx: SourceParserContext) : ApkSourceP
         val versionId = versionUrl.versionId ?: entry.fileId ?: return null
         return "$baseUrl/$extraUrl/$versionId"
     }
+
+    private fun uptodownPageUsesTurnstile(doc: Document): Boolean =
+        doc.selectFirst("#download-turnstile-widget[data-sitekey]") != null
 
     private fun uptodownDownloadUrlFromPage(doc: Document): String? {
         val dataUrl = doc.selectFirst("#detail-download-button[data-url]")
