@@ -61,6 +61,49 @@ class ApkMirrorParserTest {
     }
 
     @Test
+    fun findCandidates_requested_throwsWhenAppNotListed() = runBlocking {
+        val otherAppUrl = "https://www.apkmirror.com/apk/other-dev/other-app/"
+        val parser = ApkMirrorParser(
+            testParserContext(
+                pages = mapOf(
+                    searchUrl to
+                        """<html><body><a href="/apk/other-dev/other-app/">Other App</a></body></html>""",
+                    otherAppUrl to
+                        """<html><body><span id="com.other.app">Other App</span></body></html>"""
+                )
+            )
+        )
+        val request = testRequest(
+            packageName = packageName,
+            versionName = "1.0.4",
+            versionCode = 303
+        )
+
+        val result = runCatching { parser.findCandidates(request, CandidateOption.REQUESTED) }
+
+        assertTrue(result.exceptionOrNull() is SourceAppNotFoundException)
+    }
+
+    @Test
+    fun findCandidates_latest_throwsWhenAppNotListed() = runBlocking {
+        val otherAppUrl = "https://www.apkmirror.com/apk/other-dev/other-app/"
+        val parser = ApkMirrorParser(
+            testParserContext(
+                pages = mapOf(
+                    searchUrl to
+                        """<html><body><a href="/apk/other-dev/other-app/">Other App</a></body></html>""",
+                    otherAppUrl to
+                        """<html><body><span id="com.other.app">Other App</span></body></html>"""
+                )
+            )
+        )
+
+        val result = runCatching { parser.findCandidates(testRequest(packageName = packageName), CandidateOption.LATEST) }
+
+        assertTrue(result.exceptionOrNull() is SourceAppNotFoundException)
+    }
+
+    @Test
     fun compareVersionNames_ordersCorrectly() {
         assertTrue(compareVersionNames("10.0.0", "9.9.9") > 0)
         assertTrue(compareVersionNames("2.0.1", "2.0.0") > 0)

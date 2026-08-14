@@ -59,6 +59,15 @@ internal fun String.isUniversalArchLabel(): Boolean {
         normalizedLabel == "noarch"
 }
 
+/**
+ * Thrown by a source parser when the app is genuinely absent from the source
+ * (e.g. the search page returns no matching listing), as opposed to a transient
+ * resolution failure. Callers render this as "not found" instead of an error
+ * with a fallback candidate.
+ */
+internal class SourceAppNotFoundException(packageName: String) :
+    Exception("No listing found on source for $packageName")
+
 /** Common contract every APK source parser implements. */
 internal interface ApkSourceParser {
     val source: DownloadSource

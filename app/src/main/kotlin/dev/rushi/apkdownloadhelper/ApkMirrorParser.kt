@@ -135,7 +135,7 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         val appPageUrl = resolveApkMirrorAppPage(
             searchDoc = searchDoc,
             request = request
-        ) ?: return emptyList()
+        ) ?: throw SourceAppNotFoundException(request.packageName)
         val appDoc = fetchDocument(appPageUrl)
         val requested = apkMirrorRequestedReleaseUrl(
             request = request,
@@ -167,10 +167,7 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         val appPageUrl = resolveApkMirrorAppPage(
             searchDoc = searchDoc,
             request = request
-        ) ?: return ApkMirrorLatestInfo(
-            versionName = null,
-            openUrl = searchUrl
-        )
+        ) ?: throw SourceAppNotFoundException(request.packageName)
         val searchVersion = apkMirrorSearchVersionForApp(searchDoc, appPageUrl)
             ?: apkMirrorVersions(searchDoc.html()).firstOrNull()
         val appDoc = fetchDocument(appPageUrl)

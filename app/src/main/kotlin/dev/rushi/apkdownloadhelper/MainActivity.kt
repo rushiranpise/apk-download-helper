@@ -314,15 +314,18 @@ class MainActivity : ComponentActivity() {
             updateResolveState(
                 source = source,
                 option = option,
-                state = resolved.errorMessage
+                state = resolved.notFoundMessage
                     ?.takeIf { resolved.candidates.isEmpty() }
-                    ?.let { message ->
-                        ResolveState.Error(
-                            message = message,
-                            fallbackCandidate = resolved.fallbackCandidate
-                        )
-                    }
-                    ?: ResolveState.Done(resolved.candidates)
+                    ?.let { ResolveState.Done(emptyList()) }
+                    ?: resolved.errorMessage
+                        ?.takeIf { resolved.candidates.isEmpty() }
+                        ?.let { message ->
+                            ResolveState.Error(
+                                message = message,
+                                fallbackCandidate = resolved.fallbackCandidate
+                            )
+                        }
+                        ?: ResolveState.Done(resolved.candidates)
             )
         }
     }
@@ -445,6 +448,9 @@ class MainActivity : ComponentActivity() {
         outcome: ResolveOutcome
     ) {
         when {
+            outcome.notFoundMessage != null -> {
+                appendLog("${source.label} ${option.labelForLogs}: ${outcome.notFoundMessage}.", LogLevel.Warning)
+            }
             outcome.errorMessage != null && outcome.candidates.isEmpty() -> {
                 appendLog("${source.label} ${option.labelForLogs} failed: ${outcome.errorMessage}", LogLevel.Error)
             }
@@ -503,7 +509,19 @@ class MainActivity : ComponentActivity() {
         option: CandidateOption
     ): ResolveOutcome {
         val lookup = runCatching { findSourceCandidates(request, source, option) }
-            .onFailure { Log.w(TAG, "${source.label} ${option.name.lowercase(Locale.US)} lookup failed", it) }
+            .onFailure { error ->
+                if (error !is SourceAppNotFoundException) {
+                    Log.w(TAG, "${source.label} ${option.name.lowercase(Locale.US)} lookup failed", error)
+                }
+            }
+        lookup.exceptionOrNull()
+            ?.takeIf { it is SourceAppNotFoundException }
+            ?.let {
+                return ResolveOutcome(
+                    candidates = emptyList(),
+                    notFoundMessage = "no listing for ${request.packageName}"
+                )
+            }
         lookup.exceptionOrNull()?.let { error ->
             return ResolveOutcome(
                 candidates = emptyList(),
@@ -2925,7 +2943,8 @@ private data class SourceCandidateGroup(
 private data class ResolveOutcome(
     val candidates: List<DownloadCandidate>,
     val errorMessage: String? = null,
-    val fallbackCandidate: DownloadCandidate? = null
+    val fallbackCandidate: DownloadCandidate? = null,
+    val notFoundMessage: String? = null
 )
 
 private sealed interface ResolveState {
