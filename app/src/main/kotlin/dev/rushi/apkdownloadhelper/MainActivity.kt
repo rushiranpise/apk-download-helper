@@ -1864,13 +1864,11 @@ private fun SourcePageContent(
         ?: SourceSubTab.Latest
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        if (subTabs.size > 1) {
-            SubTabRow(
-                tabs = subTabs,
-                selected = safeTab,
-                onSelect = { selectedTab = it }
-            )
-        }
+        SubTabRow(
+            tabs = subTabs,
+            selected = safeTab,
+            onSelect = { selectedTab = it }
+        )
 
         when (safeTab) {
             SourceSubTab.Manual -> {
@@ -1907,6 +1905,15 @@ private fun SourcePageContent(
 
             SourceSubTab.Latest -> {
                 SectionHeader("Latest")
+                when (group.source) {
+                    DownloadSource.AURORA -> {
+                        InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
+                    }
+                    DownloadSource.PLAY -> {
+                        InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
+                    }
+                    else -> Unit
+                }
                 CandidateResolveSection(
                     request = request,
                     state = group.latest,
