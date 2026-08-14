@@ -1158,8 +1158,8 @@ private fun HelperScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "APK Download Helper",
-                        style = MaterialTheme.typography.headlineSmall,
+                        text = "Helper",
+                        style = MaterialTheme.typography.headlineMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground,
                         maxLines = 1,
