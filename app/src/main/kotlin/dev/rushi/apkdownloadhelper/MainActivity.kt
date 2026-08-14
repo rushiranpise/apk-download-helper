@@ -1,5 +1,6 @@
 package dev.rushi.apkdownloadhelper
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ContentValues
@@ -130,9 +131,8 @@ import retrofit2.http.POST
 import retrofit2.http.Query
 
 private const val AURORA_AUTH_URL = "https://auroraoss.com/api/auth"
-private const val TAG = "ApkDownloadHelper"
+internal const val TAG = "ApkDownloadHelper"
 private const val PREFS_NAME = "helper_settings"
-private const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
 private const val TEMP_CLEANUP_MAX_AGE_MS = 6 * 60 * 60 * 1000L
 private val DOWNLOAD_FILE_KIND_ORDER = listOf("apk", "apkm", "apks", "xapk")
 private val APK_COMBO_FILE_KIND_ORDER = listOf("apk", "xapk", "apks")
@@ -199,6 +199,10 @@ class MainActivity : ComponentActivity() {
     private var installedPackageRefreshToken by mutableIntStateOf(0)
     private val requestLogs = mutableStateListOf<RequestLogEntry>()
     private val logTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+    private var pendingDownload: PendingDownload? = null
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { _ -> startPendingDownload() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -208,6 +212,10 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(Dispatchers.IO) {
             cleanupTemporaryDownloads(helperSettings)
         }
+        lifecycleScope.launch {
+            DownloadJobManager.events.collect(::handleDownloadEvent)
+        }
+        if (deliverPendingResultIfPresent(request)) return
 
         setContent {
             HelperTheme {
@@ -246,7 +254,9 @@ class MainActivity : ComponentActivity() {
         request = HelperRequest.from(intent)
         startRequestLog(request)
         if (request != null) {
-            loadCandidates()
+            if (!deliverPendingResultIfPresent(request)) {
+                loadCandidates()
+            }
         } else {
             uiState = UiState.Idle
         }
@@ -2511,48 +2521,121 @@ class MainActivity : ComponentActivity() {
                 "${candidate.versionDisplay} (${candidate.fileKind.uppercase(Locale.US)})."
         )
         uiState = UiState.Downloading(candidate, 0)
+        pendingDownload = PendingDownload(activeRequest, candidate, settings)
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            startPendingDownload()
+        }
+    }
 
-        lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val downloadsDir = temporaryDownloadsDir().apply { mkdirs() }
-                    val files = candidate.files.ifEmpty {
-                        listOf(
-                            CandidateDownloadFile(
-                                url = candidate.url,
-                                fileName = "${candidate.packageName}-${candidate.versionName ?: "latest"}.${candidate.fileKind}"
-                                    .sanitizeFileName()
-                            )
-                        )
-                    }
+    private fun startPendingDownload() {
+        val pending = pendingDownload ?: return
+        pendingDownload = null
+        DownloadJobManager.start(
+            DownloadJobManager.DownloadJob(
+                request = pending.request,
+                candidate = pending.candidate,
+                settings = pending.settings,
+                requestIntentExtras = intent.getExtras()
+            )
+        )
+        startForegroundService(
+            Intent(this, DownloadService::class.java).setAction(ACTION_START_DOWNLOAD)
+        )
+    }
 
-                    val file = if (files.size == 1) {
-                        downloadSingleFile(candidate, files.single(), downloadsDir)
-                    } else {
-                        downloadSplitArchive(candidate, files, downloadsDir)
-                    }
-                    validateDownloadedArtifact(activeRequest, candidate, file)
-                    file
+    private fun handleDownloadEvent(event: DownloadJobManager.Event?) {
+        when (event) {
+            null -> Unit
+            is DownloadJobManager.Event.Progress -> {
+                uiState = UiState.Downloading(event.candidate, event.percent)
+            }
+            is DownloadJobManager.Event.Completed -> {
+                appendLog("Download validated: ${event.result.fileName}.")
+                if (!deliverResult(event.result)) {
+                    appendLog(
+                        "Download is ready; ${event.result.callerPackage} can request it again to receive the file.",
+                        LogLevel.Warning
+                    )
                 }
             }
+            is DownloadJobManager.Event.Failed -> {
+                appendLog(event.message, LogLevel.Error)
+                uiState = UiState.Error(event.message)
+            }
+            is DownloadJobManager.Event.Cancelled -> {
+                appendLog("Download cancelled.", LogLevel.Warning)
+                val activeRequest = request
+                uiState = if (activeRequest != null) {
+                    UiState.Ready(initialCandidateResult(activeRequest))
+                } else {
+                    UiState.Idle
+                }
+            }
+        }
+    }
 
-            result
-                .onSuccess { file ->
-                    appendLog("Download validated: ${file.name} (${file.length()} bytes).")
-                    runCatching {
-                        returnDownloadedFile(activeRequest, candidate, file, settings)
-                    }.onFailure { error ->
-                        val message = (error.message ?: "Could not return downloaded APK to Morphe.")
-                            .withManualModeHint()
-                        appendLog(message, LogLevel.Error)
-                        uiState = UiState.Error(message)
-                    }
-                }
-                .onFailure { error ->
-                    val message = downloadFailureMessage(candidate, error)
-                    appendLog(message, LogLevel.Error)
-                    uiState = UiState.Error(message)
-                }
+    private fun deliverPendingResultIfPresent(request: HelperRequest?): Boolean {
+        if (request == null) return false
+        val pending = DownloadJobManager.readPendingResult(applicationContext) ?: return false
+        if (request.packageName != pending.requestPackage) return false
+        return deliverResult(pending)
+    }
+
+    private fun deliverResult(pending: PendingDownloadResult): Boolean {
+        if (getCallingActivity() == null) return false
+        val uri = Uri.parse(pending.uri)
+        val result = Intent().apply {
+            data = uri
+            clipData = ClipData.newUri(contentResolver, pending.fileName, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            putExtra(DownloadHelperContract.EXTRA_RESULT_PACKAGE_NAME, pending.packageName)
+            putExtra(DownloadHelperContract.EXTRA_RESULT_VERSION_NAME, pending.versionName)
+            putExtra(DownloadHelperContract.EXTRA_RESULT_SOURCE_NAME, pending.sourceName)
+            putExtra(DownloadHelperContract.EXTRA_RESULT_FILE_NAME, pending.fileName)
+        }
+        setResult(Activity.RESULT_OK, result)
+        appendLog("Returned ${pending.fileName} to ${pending.callerPackage}.")
+        DownloadJobManager.clearPendingResult(applicationContext)
+        finish()
+        return true
+    }
+
+    private fun returnPreparedFile(
+        request: HelperRequest,
+        candidate: DownloadCandidate,
+        file: File,
+        settings: HelperSettings
+    ) {
+        val uri = when (settings.downloadLocation) {
+            DownloadLocation.TEMPORARY -> FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.files", file)
+            DownloadLocation.DOWNLOADS -> copyToDownloads(file)
+        }
+        val pending = PendingDownloadResult(
+            uri = uri.toString(),
+            fileName = file.name,
+            packageName = candidate.packageName,
+            versionName = candidate.versionName,
+            sourceName = candidate.source.label,
+            requestPackage = request.packageName,
+            callerPackage = request.callerPackage
+        )
+        DownloadJobManager.persistPendingResult(pending, applicationContext)
+        if (
+            settings.downloadLocation == DownloadLocation.DOWNLOADS ||
+            settings.deleteTemporaryAfterHandoff
+        ) {
+            scheduleTemporaryDelete(file)
+        }
+        if (!deliverResult(pending)) {
+            appendLog(
+                "File is ready; ${request.callerPackage} can request it again to receive it.",
+                LogLevel.Warning
+            )
         }
     }
 
@@ -2572,7 +2655,7 @@ class MainActivity : ComponentActivity() {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val file = copyPickedFileToTemporary(candidate, uri)
-                    validateDownloadedArtifact(activeRequest, candidate, file)
+                    validateDownloadedArtifact(this@MainActivity, activeRequest, candidate, file)
                     file
                 }
             }
@@ -2581,7 +2664,7 @@ class MainActivity : ComponentActivity() {
                 .onSuccess { file ->
                     appendLog("Selected file validated: ${file.name} (${file.length()} bytes).")
                     runCatching {
-                        returnDownloadedFile(activeRequest, candidate, file, settings)
+                        returnPreparedFile(activeRequest, candidate, file, settings)
                     }.onFailure { error ->
                         val message = (error.message ?: "Could not return selected APK to Morphe.")
                             .withManualModeHint()
@@ -2651,167 +2734,6 @@ class MainActivity : ComponentActivity() {
             }
             ?.takeIf(String::isNotBlank)
 
-    private fun downloadSingleFile(
-        candidate: DownloadCandidate,
-        downloadFile: CandidateDownloadFile,
-        downloadsDir: File
-    ): File {
-        val outputName = if (candidate.source == DownloadSource.AURORA) {
-            "${candidate.packageName}-${candidate.versionName ?: "latest"}-aurora.apk"
-        } else {
-            downloadFile.fileName
-        }
-        val outputFile = File(downloadsDir, outputName.sanitizeFileName())
-        executeDownload(downloadFile) { total, input ->
-            outputFile.outputStream().use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                var copied = 0L
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    output.write(buffer, 0, read)
-                    copied += read
-                    updateDownloadProgress(candidate, copied, total)
-                }
-            }
-        }
-        return outputFile
-    }
-
-    private fun downloadSplitArchive(
-        candidate: DownloadCandidate,
-        files: List<CandidateDownloadFile>,
-        downloadsDir: File
-    ): File {
-        val outputFile = File(
-            downloadsDir,
-            "${candidate.packageName}-${candidate.versionName ?: "latest"}-${candidate.source.label}.apks"
-                .sanitizeFileName()
-        )
-        val knownTotal = files.mapNotNull { it.size }.sum().takeIf { it > 0L }
-        var copied = 0L
-
-        ZipOutputStream(outputFile.outputStream()).use { zip ->
-            files.forEachIndexed { index, file ->
-                executeDownload(file) { _, input ->
-                    zip.putNextEntry(ZipEntry(file.fileName.ifBlank { "split_$index.apk" }.sanitizeFileName()))
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        zip.write(buffer, 0, read)
-                        copied += read
-                        knownTotal?.let { updateDownloadProgress(candidate, copied, it) }
-                    }
-                    zip.closeEntry()
-                }
-            }
-        }
-
-        return outputFile
-    }
-
-    private fun executeDownload(
-        file: CandidateDownloadFile,
-        copy: (total: Long, input: java.io.InputStream) -> Unit
-    ) {
-        val url = file.url.normalizedHttpUrlOrNull()
-            ?: error("Source returned an invalid download URL.".withManualModeHint())
-        val builder = Request.Builder().url(url)
-        file.referer?.let { builder.header("Referer", it) }
-
-        downloadClientFor(url).newCall(builder.build()).execute().use { response ->
-            check(response.isSuccessful) { "HTTP ${response.code}" }
-            val total = file.size ?: response.body.contentLength().coerceAtLeast(0L)
-            val contentType = response.body.contentType()?.toString()
-            response.body.byteStream().use { input ->
-                validateApkLikeStream(input, contentType).use { validated ->
-                    copy(total, validated)
-                }
-            }
-        }
-    }
-
-    private fun downloadClientFor(url: String): OkHttpClient =
-        if (url.contains("apkpure", ignoreCase = true)) apkPureClient else client
-
-    private fun updateDownloadProgress(candidate: DownloadCandidate, copied: Long, total: Long) {
-        if (total <= 0L) return
-        val percent = ((copied * 100f) / total).roundToInt().coerceIn(0, 100)
-        runOnUiThread {
-            uiState = UiState.Downloading(candidate, percent)
-        }
-    }
-
-    private fun returnDownloadedFile(
-        request: HelperRequest,
-        candidate: DownloadCandidate,
-        file: File,
-        settings: HelperSettings
-    ) {
-        val uri = when (settings.downloadLocation) {
-            DownloadLocation.TEMPORARY -> FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.files", file)
-            DownloadLocation.DOWNLOADS -> copyToDownloads(file)
-        }
-        grantUriPermission(request.callerPackage, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-
-        val result = Intent().apply {
-            data = uri
-            clipData = ClipData.newUri(contentResolver, file.name, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            putExtra(DownloadHelperContract.EXTRA_RESULT_PACKAGE_NAME, candidate.packageName)
-            putExtra(DownloadHelperContract.EXTRA_RESULT_VERSION_NAME, candidate.versionName)
-            putExtra(DownloadHelperContract.EXTRA_RESULT_SOURCE_NAME, candidate.source.label)
-            putExtra(DownloadHelperContract.EXTRA_RESULT_FILE_NAME, file.name)
-        }
-
-        setResult(Activity.RESULT_OK, result)
-        appendLog("Returned ${file.name} to ${request.callerPackage}.")
-        if (
-            settings.downloadLocation == DownloadLocation.DOWNLOADS ||
-            settings.deleteTemporaryAfterHandoff
-        ) {
-            scheduleTemporaryDelete(file)
-        }
-        finish()
-    }
-
-    private fun temporaryDownloadsDir(): File = File(cacheDir, "downloads")
-
-    private fun copyToDownloads(file: File): Uri {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, file.name)
-                put(MediaStore.Downloads.MIME_TYPE, file.mimeType())
-                put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/APK Download Helper")
-                put(MediaStore.Downloads.IS_PENDING, 1)
-            }
-            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-                ?: error("Could not create a Downloads entry.")
-
-            try {
-                contentResolver.openOutputStream(uri)?.use { output ->
-                    file.inputStream().use { input -> input.copyTo(output) }
-                } ?: error("Could not write to Downloads.")
-
-                values.clear()
-                values.put(MediaStore.Downloads.IS_PENDING, 0)
-                contentResolver.update(uri, values, null, null)
-                uri
-            } catch (error: Throwable) {
-                contentResolver.delete(uri, null, null)
-                throw error
-            }
-        } else {
-            val downloadsDir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "APK Download Helper"
-            ).apply { mkdirs() }
-            val output = downloadsDir.uniqueChild(file.name)
-            file.copyTo(output, overwrite = false)
-            FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.files", output)
-        }
-    }
 
     private fun cleanupTemporaryDownloads(settings: HelperSettings) {
         if (!settings.deleteTemporaryAfterHandoff) return
@@ -2822,77 +2744,15 @@ class MainActivity : ComponentActivity() {
             ?.forEach { file -> runCatching { file.delete() } }
     }
 
-    private fun scheduleTemporaryDelete(file: File) {
-        Thread {
-            Thread.sleep(TEMP_CLEANUP_DELAY_MS)
-            runCatching { file.delete() }
-        }.apply {
-            name = "apk-helper-temp-cleanup"
-            isDaemon = true
-            start()
-        }
-    }
-
-    private fun validateDownloadedArtifact(
-        request: HelperRequest,
-        candidate: DownloadCandidate,
-        file: File
-    ) {
-        val shouldValidateMetadata = candidate.fileKind.lowercase(Locale.US) in setOf("apk", "apks", "apkm", "xapk") ||
-            file.extension.lowercase(Locale.US) in setOf("apk", "apks", "apkm", "xapk")
-        val metadata = readDownloadedApkMetadata(file) ?: run {
-            check(!shouldValidateMetadata) {
-                file.delete()
-                "Downloaded file could not be read as an APK.".withManualModeHint()
-            }
-            return
-        }
-        val mismatches = buildList {
-            if (metadata.packageName != request.packageName) {
-                add("Package: requested ${request.packageName}, found ${metadata.packageName}")
-            }
-
-            if (candidate.option == CandidateOption.REQUESTED) {
-                val requestedNames = request.knownVersionNames
-                if (
-                    requestedNames.isNotEmpty() &&
-                    requestedNames.none { metadata.versionName.versionNameEquals(it) }
-                ) {
-                    add(
-                        "Version: requested ${requestedNames.joinToString()}, " +
-                            "found ${metadata.versionName ?: "unknown"}"
-                    )
-                }
-
-                val requestedCodes = request.requestedVersionCodes +
-                    request.compatibleVersionCodes.filter { it > 0L }
-                if (
-                    requestedCodes.isNotEmpty() &&
-                    metadata.versionCode !in requestedCodes
-                ) {
-                    add(
-                        "Version code: requested ${requestedCodes.joinToString()}, " +
-                            "found ${metadata.versionCode ?: "unknown"}"
-                    )
-                }
-            }
-        }
-
-        check(mismatches.isEmpty()) {
-            file.delete()
-            "Downloaded file does not match Morphe request.\n${mismatches.joinToString("\n")}"
-                .withManualModeHint()
-        }
-    }
 }
 
-private data class HelperSettings(
+internal data class HelperSettings(
     val downloadLocation: DownloadLocation = DownloadLocation.TEMPORARY,
     val networkPolicy: NetworkPolicy = NetworkPolicy.WIFI_AND_MOBILE,
     val deleteTemporaryAfterHandoff: Boolean = true
 )
 
-private enum class DownloadLocation(
+internal enum class DownloadLocation(
     val title: String,
     val description: String
 ) {
@@ -2906,7 +2766,7 @@ private enum class DownloadLocation(
     )
 }
 
-private enum class NetworkPolicy(
+internal enum class NetworkPolicy(
     val title: String,
     val description: String
 ) {
@@ -2950,6 +2810,8 @@ private enum class NetworkPolicy(
     }
 }
 
+internal fun Context.temporaryDownloadsDir(): File = File(cacheDir, "downloads")
+
 private fun Context.loadHelperSettings(): HelperSettings {
     val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     return HelperSettings(
@@ -2977,7 +2839,7 @@ private fun Context.saveHelperSettings(settings: HelperSettings) {
 private inline fun <reified T : Enum<T>> enumValueOrDefault(name: String?, fallback: T): T =
     name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: fallback
 
-private fun File.mimeType(): String = when (extension.lowercase(Locale.US)) {
+internal fun File.mimeType(): String = when (extension.lowercase(Locale.US)) {
     "apk" -> "application/vnd.android.package-archive"
     "apks",
     "apkm",
@@ -2985,7 +2847,7 @@ private fun File.mimeType(): String = when (extension.lowercase(Locale.US)) {
     else -> "application/octet-stream"
 }
 
-private fun File.uniqueChild(fileName: String): File {
+internal fun File.uniqueChild(fileName: String): File {
     val safeName = fileName.sanitizeFileName()
     val base = safeName.substringBeforeLast('.', safeName)
     val extension = safeName.substringAfterLast('.', "")
@@ -4137,7 +3999,7 @@ private fun ErrorState(message: String, onRefresh: () -> Unit, onCancel: () -> U
     }
 }
 
-private data class HelperRequest(
+internal data class HelperRequest(
     val callerPackage: String,
     val packageName: String,
     val appName: String,
@@ -4427,7 +4289,7 @@ private data class UptodownVariantFile(
     val archLabel: String?
 )
 
-private data class DownloadCandidate(
+internal data class DownloadCandidate(
     val source: DownloadSource,
     val name: String,
     val packageName: String,
@@ -4502,20 +4364,20 @@ private fun DownloadCandidate.matchSummary(request: HelperRequest): CandidateMat
 private fun DownloadCandidate.identityKey(): String =
     "${source.name}:$versionName:$versionCode:$fileKind:$variantLabel:$url"
 
-private data class CandidateDownloadFile(
+internal data class CandidateDownloadFile(
     val url: String,
     val fileName: String,
     val size: Long? = null,
     val referer: String? = null
 )
 
-private data class DownloadedApkMetadata(
+internal data class DownloadedApkMetadata(
     val packageName: String,
     val versionName: String?,
     val versionCode: Long?
 )
 
-private enum class DownloadSource(
+internal enum class DownloadSource(
     val label: String,
     val sortIndex: Int,
     val supportsManualArtifactPicker: Boolean = true
@@ -4539,7 +4401,7 @@ private fun DownloadSource.searchDomain(): String? = when (this) {
     DownloadSource.AURORA -> null
 }
 
-private enum class CandidateOption {
+internal enum class CandidateOption {
     MANUAL,
     REQUESTED,
     LATEST
@@ -4552,7 +4414,7 @@ private val CandidateOption.labelForLogs: String
         CandidateOption.LATEST -> "latest"
     }
 
-private enum class VersionStatus(val label: String) {
+internal enum class VersionStatus(val label: String) {
     REQUESTED("Requested"),
     COMPATIBLE("Compatible"),
     LATEST("Latest")
@@ -4586,7 +4448,7 @@ private sealed interface UiState {
     data class Error(val message: String) : UiState
 }
 
-private object DownloadHelperContract {
+internal object DownloadHelperContract {
     const val ACTION_DOWNLOAD_ORIGINAL_APK = "app.morphe.manager.action.DOWNLOAD_ORIGINAL_APK"
     const val EXTRA_PROTOCOL_VERSION = "app.morphe.manager.extra.PROTOCOL_VERSION"
     const val EXTRA_CALLER_PACKAGE = "app.morphe.manager.extra.CALLER_PACKAGE"
@@ -4810,7 +4672,7 @@ private fun Context.isPackageInstalled(packageName: String): Boolean =
         }
     }.isSuccess
 
-private fun String.normalizedHttpUrlOrNull(): String? {
+internal fun String.normalizedHttpUrlOrNull(): String? {
     val normalized = trim().let { url ->
         when {
             url.startsWith("//") -> "https:$url"
@@ -4844,7 +4706,7 @@ private fun validateApkLikeStream(
     return SequenceInputStream(ByteArrayInputStream(header, 0, headerSize), input)
 }
 
-private fun Context.readDownloadedApkMetadata(file: File): DownloadedApkMetadata? {
+internal fun Context.readDownloadedApkMetadata(file: File): DownloadedApkMetadata? {
     if (file.extension.equals("apk", ignoreCase = true)) {
         return readApkMetadata(file)
     }
@@ -4931,7 +4793,7 @@ private fun String.apkMirrorVersionSlug(): String =
         .replace(Regex("-+"), "-")
         .trim('-')
 
-private fun String?.versionNameEquals(other: String?): Boolean {
+internal fun String?.versionNameEquals(other: String?): Boolean {
     if (this == null || other == null) return false
     val left = normalizedVersionName()
     val right = other.normalizedVersionName()
@@ -4961,7 +4823,7 @@ private fun String.normalizedVersionName(): String =
         .replace(Regex("""[^\p{Alnum}]+"""), ".")
         .trim('.')
 
-private fun String.withManualModeHint(): String {
+internal fun String.withManualModeHint(): String {
     if (contains("Manual mode", ignoreCase = true)) return this
     val message = trimEnd()
     val hint = "Use Manual mode for this source instead."
@@ -4971,10 +4833,10 @@ private fun String.withManualModeHint(): String {
 private fun sourceFailureMessage(source: DownloadSource, error: Throwable): String =
     sourceFailureMessage(source.label, error, action = "check")
 
-private fun downloadFailureMessage(candidate: DownloadCandidate, error: Throwable): String =
+internal fun downloadFailureMessage(candidate: DownloadCandidate, error: Throwable): String =
     sourceFailureMessage(candidate.source.label, error, action = "download")
 
-private fun sourceFailureMessage(sourceLabel: String, error: Throwable, action: String): String {
+internal fun sourceFailureMessage(sourceLabel: String, error: Throwable, action: String): String {
     val details = error.failureDetails()
     val httpCode = Regex("""\bHTTP\s+(\d{3})\b""", RegexOption.IGNORE_CASE)
         .find(details)
@@ -5011,7 +4873,7 @@ private fun sourceFailureMessage(sourceLabel: String, error: Throwable, action: 
     }
 }
 
-private fun Throwable.failureDetails(): String =
+internal fun Throwable.failureDetails(): String =
     generateSequence(this) { it.cause }
         .mapNotNull { it.message?.trim()?.takeIf(String::isNotBlank) }
         .firstOrNull()
@@ -5082,5 +4944,5 @@ private fun String?.variantFileSuffix(): String =
         ?.let { "-$it" }
         .orEmpty()
 
-private fun String.sanitizeFileName(): String =
+internal fun String.sanitizeFileName(): String =
     replace(Regex("[^A-Za-z0-9._-]"), "_")
