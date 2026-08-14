@@ -66,6 +66,52 @@ class ApkMirrorParserTest {
     }
 
     @Test
+    fun resolveHistory_prefersCanonicalListingOverEditionListing() = runBlocking {
+        val packageName = "com.zhiliaoapp.musically"
+        val searchUrl =
+            "https://www.apkmirror.com/?post_type=app_release&searchtype=app&s=$packageName"
+        val canonicalPage =
+            "https://www.apkmirror.com/apk/tiktok-pte-ltd/tik-tok-including-musical-ly/"
+        val amazonPage =
+            "https://www.apkmirror.com/apk/tiktok-pte-ltd/tiktok-amazon-appstore-fire-tablet-version/"
+        val canonicalUploads =
+            "https://www.apkmirror.com/uploads/?appcategory=tik-tok-including-musical-ly"
+
+        val parser = ApkMirrorParser(
+            testParserContext(
+                pages = mapOf(
+                    searchUrl to
+                        """<html><body>
+                           <a href="/apk/tiktok-pte-ltd/tik-tok-including-musical-ly/">TikTok</a>
+                           <a href="/apk/tiktok-pte-ltd/tiktok-amazon-appstore-fire-tablet-version/">TikTok Amazon Appstore</a>
+                         </body></html>""",
+                    canonicalPage to
+                        """<html><body><span id="$packageName">TikTok</span></body></html>""",
+                    amazonPage to
+                        """<html><body><span id="$packageName">TikTok Amazon</span></body></html>""",
+                    canonicalUploads to
+                        """<html><body>
+                           <a href="/apk/tiktok-pte-ltd/tik-tok-including-musical-ly/46-2-3-release/">46.2.3</a>
+                         </body></html>"""
+                )
+            )
+        )
+
+        // The canonical listing and its Amazon Appstore edition share the same
+        // package and developer; the canonical one must win so its version
+        // stream (which carries the requested releases) is used.
+        val candidates = parser.resolveHistory(
+            testRequest(packageName = packageName, appName = "TikTok")
+        )
+
+        assertEquals(listOf("46.2.3"), candidates.map { it.versionName })
+        assertEquals(
+            "https://www.apkmirror.com/apk/tiktok-pte-ltd/tik-tok-including-musical-ly/46-2-3-release/",
+            candidates.single().url
+        )
+    }
+
+    @Test
     fun resolveHistory_fallsBackToSearchUrlWhenNoAppPage() = runBlocking {
         val parser = ApkMirrorParser(
             testParserContext(

@@ -7,6 +7,12 @@ import java.util.Locale
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
+/** App-listing slugs that carry a different version stream than the canonical app. */
+private val APKMIRROR_EDITION_SLUG_REGEX = Regex(
+    """(amazon|fire-tablet|fire-tv|androidtv|wear|go-edition|lite|beta|alpha|enterprise|kids|headunit|auto)""",
+    RegexOption.IGNORE_CASE
+)
+
 internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSourceParser {
     override val source: DownloadSource = DownloadSource.APK_MIRROR
 
@@ -275,15 +281,30 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         }
 
     private fun apkMirrorAppSlugScore(url: String, expectedSlugs: Set<String>): Int {
-        val appSlug = runCatching {
-            java.net.URI(url).path.trim('/').split('/').getOrNull(2).orEmpty()
-        }.getOrDefault("")
-        return when {
-            appSlug in expectedSlugs -> 0
-            expectedSlugs.any { appSlug.endsWith(it) } -> 1
-            expectedSlugs.any { appSlug.contains(it) } -> 2
+        val segments = runCatching {
+            java.net.URI(url).path.trim('/').split('/')
+        }.getOrDefault(emptyList())
+        // Path layout: /apk/{developer}/{app-slug}/ — the developer segment
+        // alone is ambiguous when a publisher lists several editions (e.g.
+        // TikTok vs its Amazon Appstore edition), so score the app segment too.
+        val developerSlug = segments.getOrNull(1).orEmpty()
+        val appSlug = segments.getOrNull(2).orEmpty()
+
+        fun scoreSlug(slug: String): Int = when {
+            slug in expectedSlugs -> 0
+            expectedSlugs.any { slug.endsWith(it) } -> 1
+            expectedSlugs.any { slug.contains(it) } -> 2
             else -> 3
         }
+
+        // Score both the developer and the app segment (e.g. TikTok's canonical
+        // listing vs its Amazon Appstore edition live under the same developer).
+        var score = minOf(scoreSlug(developerSlug), scoreSlug(appSlug))
+
+        // Prefer the canonical listing over special editions, which share the
+        // package name but carry different version streams (amazon, lite, tv...).
+        if (APKMIRROR_EDITION_SLUG_REGEX.containsMatchIn(appSlug)) score += 4
+        return score
     }
 
     private fun apkMirrorSearchVersionForApp(searchDoc: Document, appPageUrl: String): String? {

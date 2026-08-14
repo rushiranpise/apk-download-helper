@@ -3048,8 +3048,11 @@ internal data class HelperRequest(
     }
 
     fun acceptsFormat(fileKind: String): Boolean {
-        val kind = fileKind.lowercase(Locale.US)
-        return kind in requestedFileKinds
+        // Some parsers tag a candidate with the whole requested label (e.g.
+        // "APK/APKM/APKS/XAPK") instead of a single kind. Split on '/' so any
+        // listed kind counts as a match instead of a false "Format mismatch".
+        val kinds = fileKind.lowercase(Locale.US).split('/')
+        return kinds.any { it in requestedFileKinds }
     }
 
     fun matchesKnownVersion(candidateVersionName: String?, candidateVersionCode: Long?): Boolean =
