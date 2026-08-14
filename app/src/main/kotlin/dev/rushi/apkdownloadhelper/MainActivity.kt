@@ -967,6 +967,8 @@ private object HelperDefaults {
     val ItemSpacing = 12.dp
     val IconSizeSmall = 20.dp
     val ButtonHeight = 52.dp
+    val ActionShowWidth = 88.dp
+    val ActionClearWidth = 96.dp
 }
 
 @Composable
@@ -1268,7 +1270,8 @@ private fun SourceHealthCard(entries: List<SourceHealthEntry>) {
             }
             HelperOutlinedButton(
                 text = if (expanded) "Hide" else "Show",
-                onClick = { expanded = !expanded }
+                onClick = { expanded = !expanded },
+                modifier = Modifier.width(HelperDefaults.ActionShowWidth)
             )
         }
 
@@ -2241,13 +2244,14 @@ private fun DownloadHistorySection(
                 modifier = Modifier.weight(1f)
             )
             HelperOutlinedButton(
-                text = if (expanded) "Hide" else "Show",
-                onClick = { expanded = !expanded }
-            )
-            HelperOutlinedButton(
                 text = "Clear",
                 onClick = onClear,
-                modifier = Modifier.widthIn(min = 96.dp)
+                modifier = Modifier.width(HelperDefaults.ActionClearWidth)
+            )
+            HelperOutlinedButton(
+                text = if (expanded) "Hide" else "Show",
+                onClick = { expanded = !expanded },
+                modifier = Modifier.width(HelperDefaults.ActionShowWidth)
             )
         }
 
@@ -2291,13 +2295,14 @@ private fun RequestLogsCard(
                 modifier = Modifier.weight(1f)
             )
             HelperOutlinedButton(
-                text = if (expanded) "Hide" else "Show",
-                onClick = { expanded = !expanded }
-            )
-            HelperOutlinedButton(
                 text = "Clear",
                 onClick = onClearLogs,
-                modifier = Modifier.widthIn(min = 96.dp)
+                modifier = Modifier.width(HelperDefaults.ActionClearWidth)
+            )
+            HelperOutlinedButton(
+                text = if (expanded) "Hide" else "Show",
+                onClick = { expanded = !expanded },
+                modifier = Modifier.width(HelperDefaults.ActionShowWidth)
             )
         }
 
