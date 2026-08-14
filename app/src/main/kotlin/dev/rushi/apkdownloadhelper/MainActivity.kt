@@ -2184,11 +2184,11 @@ private fun SourcePill(
             .clip(shape)
             .clickable(onClick = onClick),
         shape = shape,
-        color = if (selected) colors.primary.copy(alpha = 0.24f) else colors.surfaceColorAtElevation(3.dp),
-        contentColor = if (selected) colors.onPrimaryContainer else colors.onSurfaceVariant,
+        color = if (selected) colors.primary else colors.surfaceColorAtElevation(3.dp),
+        contentColor = if (selected) colors.onPrimary else colors.onSurfaceVariant,
         border = BorderStroke(
             1.dp,
-            if (selected) colors.primary.copy(alpha = 0.6f) else colors.outlineVariant.copy(alpha = 0.55f)
+            if (selected) colors.primary else colors.outlineVariant.copy(alpha = 0.55f)
         )
     ) {
         Box(contentAlignment = Alignment.Center) {
