@@ -23,6 +23,58 @@ internal class ApkPureParser(private val ctx: SourceParserContext) : ApkSourcePa
 
     override fun searchUrl(packageName: String): String? = apkPureInfoUrl(packageName)
 
+    override suspend fun resolveHistory(request: HelperRequest): List<DownloadCandidate> {
+        val appPageUrl = runCatching { apkPureAppPageUrl(request) }
+            .onFailure { Log.w(TAG, "APKPure app page resolve failed", it) }
+            .getOrNull()
+            ?: return emptyList()
+        val versionsDoc = runCatching { fetchDocument("$appPageUrl/versions", referer = appPageUrl) }
+            .onFailure { Log.w(TAG, "APKPure versions page resolve failed", it) }
+            .getOrNull()
+            ?: return emptyList()
+        val entries = apkPureVersionEntries(versionsDoc, request)
+
+        return entries
+            .distinctBy { it.versionName?.normalizedVersionName() }
+            .mapNotNull { entry ->
+                val versionName = entry.versionName ?: return@mapNotNull null
+                DownloadCandidate(
+                    source = DownloadSource.APK_PURE,
+                    name = request.appName,
+                    packageName = request.packageName,
+                    versionName = versionName,
+                    versionCode = entry.versionCode,
+                    url = entry.downloadPageUrl,
+                    fileKind = entry.fileKind,
+                    option = CandidateOption.LATEST,
+                    directDownload = false,
+                    versionStatus = request.versionStatus(versionName, entry.versionCode),
+                    formatMatches = request.acceptsFormat(entry.fileKind),
+                    note = null
+                )
+            }
+            .sortedWith { left, right -> compareVersionNames(right.versionName, left.versionName) }
+    }
+
+    override suspend fun resolveHistoryCandidate(
+        request: HelperRequest,
+        candidate: DownloadCandidate
+    ): DownloadCandidate? {
+        val appPageUrl = candidate.url.substringBefore("/download").ifBlank { candidate.url }
+        return runCatching {
+            apkPureCandidateFromDownloadPage(
+                request = request,
+                appPageUrl = appPageUrl,
+                downloadPageUrl = candidate.url,
+                versionName = candidate.versionName,
+                versionCode = candidate.versionCode,
+                option = CandidateOption.LATEST
+            )
+        }
+            .onFailure { Log.w(TAG, "APKPure history version resolve failed: ${candidate.url}", it) }
+            .getOrNull()
+    }
+
     private suspend fun apkPureLatestCandidates(request: HelperRequest): List<DownloadCandidate> {
         val response = apkPureApi.getAppUpdate(
             header = gson.toJson(ApkPureDeviceHeader()),

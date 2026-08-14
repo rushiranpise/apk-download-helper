@@ -1914,10 +1914,8 @@ private fun SourceTabs(
                 installedPackageRefreshToken = installedPackageRefreshToken
             )
 
-            if (selectedGroup.source == DownloadSource.APK_MIRROR ||
-                selectedGroup.source == DownloadSource.UPTODOWN ||
-                selectedGroup.source == DownloadSource.APK_COMBO ||
-                selectedGroup.source == DownloadSource.APTOIDE
+            if (selectedGroup.source != DownloadSource.AURORA &&
+                selectedGroup.source != DownloadSource.PLAY
             ) {
                 SectionHeader("Version history")
                 VersionHistorySection(
