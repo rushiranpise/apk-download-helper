@@ -2145,21 +2145,28 @@ private fun SourceSelector(
     selectedIndex: Int,
     onSelect: (Int) -> Unit
 ) {
-    FlowRow(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall),
-        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
-    ) {
-        groups.forEachIndexed { index, group ->
-            SourcePill(
-                text = group.source.label,
-                selected = index == selectedIndex,
-                onClick = { onSelect(index) },
-                height = 40.dp,
-                minWidth = 56.dp,
-                textStyle = MaterialTheme.typography.labelMedium,
-                textHorizontalPadding = 8.dp
-            )
+    // Split the sources into two balanced rows; pills stretch to fill each row end to end.
+    val firstRowCount = (groups.size + 1) / 2
+    Column(verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)) {
+        var globalIndex = 0
+        groups.chunked(firstRowCount).forEach { rowGroups ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+            ) {
+                rowGroups.forEach { group ->
+                    val index = globalIndex++
+                    SourcePill(
+                        text = group.source.label,
+                        selected = index == selectedIndex,
+                        onClick = { onSelect(index) },
+                        modifier = Modifier.weight(1f),
+                        minWidth = 0.dp,
+                        textStyle = MaterialTheme.typography.labelMedium,
+                        textHorizontalPadding = 8.dp
+                    )
+                }
+            }
         }
     }
 }
