@@ -1876,7 +1876,6 @@ private fun SourcePageContent(
 
         when (safeTab) {
             SourceSubTab.Manual -> {
-                SectionHeader("Manual")
                 group.manual.forEach { candidate ->
                     CandidateCard(
                         request = request,
@@ -1890,7 +1889,6 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.Recommended -> {
-                SectionHeader("Recommended")
                 CandidateResolveSection(
                     request = request,
                     state = group.recommended,
@@ -1908,7 +1906,6 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.Latest -> {
-                SectionHeader("Latest")
                 when (group.source) {
                     DownloadSource.AURORA -> {
                         InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
@@ -1935,7 +1932,6 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.History -> {
-                SectionHeader("Version history")
                 VersionHistorySection(
                     state = group.history,
                     onResolve = { onVersionHistory(group.source) },
@@ -2213,16 +2209,6 @@ private fun SourcePill(
             )
         }
     }
-}
-
-@Composable
-private fun SectionHeader(title: String) {
-    Text(
-        title,
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.onBackground
-    )
 }
 
 @Composable
