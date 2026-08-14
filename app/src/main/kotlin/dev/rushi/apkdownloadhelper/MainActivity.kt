@@ -1706,11 +1706,22 @@ private fun SettingsChoiceRow(
             .clip(shape)
             .clickable(onClick = onClick),
         shape = shape,
-        color = if (selected) colors.primary else colors.surfaceColorAtElevation(2.dp),
-        contentColor = if (selected) colors.onPrimary else colors.onSurface,
+        // Stay on the dark card style; the selected state is a subtle primary
+        // tint + border + check icon instead of a solid light fill that clashes
+        // with the dark theme.
+        color = if (selected) {
+            colors.primary.copy(alpha = 0.13f)
+        } else {
+            colors.surfaceColorAtElevation(2.dp)
+        },
+        contentColor = colors.onSurface,
         border = BorderStroke(
             1.dp,
-            if (selected) colors.primary else colors.outlineVariant.copy(alpha = 0.45f)
+            if (selected) {
+                colors.primary.copy(alpha = 0.55f)
+            } else {
+                colors.outlineVariant.copy(alpha = 0.45f)
+            }
         )
     ) {
         Row(
@@ -1724,15 +1735,26 @@ private fun SettingsChoiceRow(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text(title, fontWeight = FontWeight.Bold)
+                Text(
+                    title,
+                    fontWeight = FontWeight.Bold,
+                    color = if (selected) colors.primary else colors.onSurface
+                )
                 Text(
                     description,
                     color = if (selected) {
-                        colors.onPrimary.copy(alpha = 0.72f)
+                        colors.primary.copy(alpha = 0.78f)
                     } else {
                         colors.onSurfaceVariant
                     },
                     style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            if (selected) {
+                Icon(
+                    imageVector = Icons.Outlined.CheckCircle,
+                    contentDescription = "Selected",
+                    tint = colors.primary
                 )
             }
         }
