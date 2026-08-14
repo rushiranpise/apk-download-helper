@@ -1649,9 +1649,6 @@ private fun SettingsChoiceRow(
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
-            if (selected) {
-                HelperChip(text = "Selected", tone = ChipTone.Success)
-            }
         }
     }
 }
