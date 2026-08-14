@@ -50,6 +50,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -264,7 +265,8 @@ class MainActivity : ComponentActivity() {
                         appendLog("Query canceled by user.", LogLevel.Warning)
                         setResult(Activity.RESULT_CANCELED)
                         finish()
-                    }
+                    },
+                    onCancelDownload = ::cancelDownload
                 )
             }
         }
@@ -752,6 +754,17 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun cancelDownload() {
+        appendLog("Cancelling download…", LogLevel.Warning)
+        runCatching {
+            startService(
+                Intent(this, DownloadService::class.java).setAction(ACTION_CANCEL_DOWNLOAD)
+            )
+        }.onFailure {
+            appendLog("Could not cancel the download.", LogLevel.Error)
+        }
+    }
+
     private fun handleDownloadEvent(event: DownloadJobManager.Event?) {
         when (event) {
             null -> Unit
@@ -1186,7 +1199,8 @@ private fun HelperScreen(
     onShareHistoryEntry: (DownloadHistoryEntry) -> Unit,
     onClearHistory: () -> Unit,
     onClearLogs: () -> Unit,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onCancelDownload: () -> Unit
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var pendingFilePick by remember { mutableStateOf<DownloadCandidate?>(null) }
@@ -1311,7 +1325,7 @@ private fun HelperScreen(
                 }
 
                 is UiState.CheckingPickedFile -> item { CheckingPickedFileState(state) }
-                is UiState.Downloading -> item { DownloadingState(state) }
+                is UiState.Downloading -> item { DownloadingState(state, onCancelDownload) }
                 is UiState.Error -> item {
                     ErrorState(message = state.message, onRefresh = onRefresh, onCancel = onCancel)
                 }
@@ -2885,18 +2899,29 @@ private fun CheckingPickedFileState(state: UiState.CheckingPickedFile) {
 }
 
 @Composable
-private fun DownloadingState(state: UiState.Downloading) {
+private fun DownloadingState(state: UiState.Downloading, onCancel: () -> Unit) {
     HelperCard {
         Column(
             modifier = Modifier.padding(HelperDefaults.ContentPadding),
             verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
         ) {
-        Text("Downloading from ${state.candidate.source.label}")
-        LinearProgressIndicator(
-            progress = { state.percent / 100f },
-            modifier = Modifier.fillMaxWidth()
-        )
-        Text("${state.percent}%")
+            Text("Downloading from ${state.candidate.source.label}")
+            LinearProgressIndicator(
+                progress = { state.percent / 100f },
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("${state.percent}%", fontWeight = FontWeight.Medium)
+                HelperOutlinedButton(
+                    text = "Cancel",
+                    onClick = onCancel,
+                    icon = Icons.Outlined.Close
+                )
+            }
         }
     }
 }
