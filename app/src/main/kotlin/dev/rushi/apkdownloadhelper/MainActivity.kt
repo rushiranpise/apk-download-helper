@@ -1503,41 +1503,12 @@ private fun HelperSettingsScreen(
         }
 
         item {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Download history",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        modifier = Modifier.weight(1f)
-                    )
-                    HelperOutlinedButton(
-                        text = "Clear",
-                        onClick = onClearHistory,
-                        modifier = Modifier.widthIn(min = 96.dp)
-                    )
-                }
-                if (historyEntries.isEmpty()) {
-                    InfoCard("No hand-offs recorded yet. Downloads and picked files you return to Morphe show up here.")
-                } else {
-                    historyEntries.forEach { entry ->
-                        val usable = remember(entry.uri) { context.isHistoryUriUsable(entry.uri) }
-                        HistoryEntryCard(
-                            entry = entry,
-                            usable = usable,
-                            onOpen = { onOpenHistoryEntry(entry) },
-                            onShare = { onShareHistoryEntry(entry) }
-                        )
-                    }
-                }
-            }
+            DownloadHistorySection(
+                entries = historyEntries,
+                onClear = onClearHistory,
+                onOpen = onOpenHistoryEntry,
+                onShare = onShareHistoryEntry
+            )
         }
 
         item {
@@ -2256,10 +2227,64 @@ private fun InfoCard(text: String) {
 }
 
 @Composable
+private fun DownloadHistorySection(
+    entries: List<DownloadHistoryEntry>,
+    onClear: () -> Unit,
+    onOpen: (DownloadHistoryEntry) -> Unit,
+    onShare: (DownloadHistoryEntry) -> Unit
+) {
+    val context = LocalContext.current
+    var expanded by rememberSaveable { mutableStateOf(true) }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Download history",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            HelperOutlinedButton(
+                text = if (expanded) "Hide" else "Show",
+                onClick = { expanded = !expanded }
+            )
+            HelperOutlinedButton(
+                text = "Clear",
+                onClick = onClear,
+                modifier = Modifier.widthIn(min = 96.dp)
+            )
+        }
+
+        if (expanded) {
+            if (entries.isEmpty()) {
+                InfoCard("No hand-offs recorded yet. Downloads and picked files you return to Morphe show up here.")
+            } else {
+                entries.forEach { entry ->
+                    val usable = remember(entry.uri) { context.isHistoryUriUsable(entry.uri) }
+                    HistoryEntryCard(
+                        entry = entry,
+                        usable = usable,
+                        onOpen = { onOpen(entry) },
+                        onShare = { onShare(entry) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun RequestLogsCard(
     logs: List<RequestLogEntry>,
     onClearLogs: () -> Unit
 ) {
+    var expanded by rememberSaveable { mutableStateOf(true) }
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
             modifier = Modifier
@@ -2279,26 +2304,32 @@ private fun RequestLogsCard(
                     modifier = Modifier.weight(1f)
                 )
                 HelperOutlinedButton(
+                    text = if (expanded) "Hide" else "Show",
+                    onClick = { expanded = !expanded }
+                )
+                HelperOutlinedButton(
                     text = "Clear",
                     onClick = onClearLogs,
                     modifier = Modifier.widthIn(min = 96.dp)
                 )
             }
 
-            if (logs.isEmpty()) {
-                Text(
-                    text = "No logs yet.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            } else {
-                SelectionContainer {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        logs.takeLast(80).forEach { entry ->
-                            Text(
-                                text = "${entry.time} ${entry.level.badge} ${entry.message}",
-                                color = entry.level.color(),
-                                style = MaterialTheme.typography.bodySmall
-                            )
+            if (expanded) {
+                if (logs.isEmpty()) {
+                    Text(
+                        text = "No logs yet.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    SelectionContainer {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            logs.takeLast(80).forEach { entry ->
+                                Text(
+                                    text = "${entry.time} ${entry.level.badge} ${entry.message}",
+                                    color = entry.level.color(),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
                         }
                     }
                 }
