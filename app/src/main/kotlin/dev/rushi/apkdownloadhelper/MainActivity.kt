@@ -1190,25 +1190,6 @@ private fun HelperScreen(
             item {
                 AppInfoCard(request)
             }
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
-                ) {
-                    HelperOutlinedButton(
-                        text = "Refresh",
-                        onClick = onRefresh,
-                        icon = Icons.Outlined.Refresh,
-                        modifier = Modifier.weight(1f)
-                    )
-                    HelperOutlinedButton(
-                        text = "Cancel",
-                        onClick = onCancel,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
             when (state) {
                 UiState.Idle,
                 UiState.Loading -> item { LoadingState() }
@@ -1224,6 +1205,8 @@ private fun HelperScreen(
                             onUseInstalledApp = onUseInstalledApp,
                             onVersionHistory = onVersionHistory,
                             onDownloadVersion = onDownloadVersion,
+                            onRefresh = onRefresh,
+                            onCancel = onCancel,
                             installedPackageRefreshToken = installedPackageRefreshToken
                         )
                     }
@@ -1785,6 +1768,8 @@ private fun SourceTabs(
     onUseInstalledApp: (DownloadCandidate) -> Unit,
     onVersionHistory: (DownloadSource) -> Unit,
     onDownloadVersion: (DownloadCandidate) -> Unit,
+    onRefresh: () -> Unit,
+    onCancel: () -> Unit,
     installedPackageRefreshToken: Int
 ) {
     val groups = result.sourceGroups
@@ -1800,6 +1785,23 @@ private fun SourceTabs(
                 scope.launch { pagerState.animateScrollToPage(index) }
             }
         )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+        ) {
+            HelperOutlinedButton(
+                text = "Refresh",
+                onClick = onRefresh,
+                icon = Icons.Outlined.Refresh,
+                modifier = Modifier.weight(1f)
+            )
+            HelperOutlinedButton(
+                text = "Cancel",
+                onClick = onCancel,
+                modifier = Modifier.weight(1f)
+            )
+        }
 
         HorizontalPager(
             state = pagerState,
