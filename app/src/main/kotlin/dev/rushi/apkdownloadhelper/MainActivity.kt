@@ -121,9 +121,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.Cache
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
-import org.jsoup.nodes.Element
 import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import retrofit2.http.Body
@@ -133,15 +131,15 @@ import retrofit2.http.Headers
 import retrofit2.http.POST
 import retrofit2.http.Query
 
-private const val AURORA_AUTH_URL = "https://auroraoss.com/api/auth"
+internal const val AURORA_AUTH_URL = "https://auroraoss.com/api/auth"
 internal const val TAG = "ApkDownloadHelper"
-private const val PREFS_NAME = "helper_settings"
-private const val TEMP_CLEANUP_MAX_AGE_MS = 6 * 60 * 60 * 1000L
-private val DOWNLOAD_FILE_KIND_ORDER = listOf("apk", "apkm", "apks", "xapk")
-private val APK_COMBO_FILE_KIND_ORDER = listOf("apk", "xapk", "apks")
-private val DOWNLOAD_FILE_KIND_SET = DOWNLOAD_FILE_KIND_ORDER.toSet()
-private val SPLIT_ARCHIVE_FILE_KINDS = setOf("apkm", "apks", "xapk")
-private val DOWNLOAD_FILE_KIND_REGEX = Regex("""apkm|apks|xapk|apk""", RegexOption.IGNORE_CASE)
+internal val DOWNLOAD_FILE_KIND_ORDER = listOf("apk", "apkm", "apks", "xapk")
+internal val APK_COMBO_FILE_KIND_ORDER = listOf("apk", "xapk", "apks")
+internal val DOWNLOAD_FILE_KIND_SET = DOWNLOAD_FILE_KIND_ORDER.toSet()
+internal val SPLIT_ARCHIVE_FILE_KINDS = setOf("apkm", "apks", "xapk")
+internal val DOWNLOAD_FILE_KIND_REGEX = Regex("""apkm|apks|xapk|apk""", RegexOption.IGNORE_CASE)
+internal val gson = Gson()
+
 private val APK_PICKER_MIME_TYPES = arrayOf(
     "application/vnd.android.package-archive",
     "application/zip",
@@ -153,7 +151,6 @@ class MainActivity : ComponentActivity() {
     private val browserUserAgent =
         "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36"
-    private val gson = Gson()
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
@@ -177,11 +174,6 @@ class MainActivity : ComponentActivity() {
         }
         .build()
 
-    private val playHttpClient by lazy {
-        PlayHttpClient(Cache(File(cacheDir, "play-cache"), 64L * 1024L * 1024L))
-    }
-    private var playAuthData: AuthData? = null
-
     private val apkPureApi = Retrofit.Builder()
         .client(apkPureClient)
         .baseUrl("https://tapi.pureapk.com/")
@@ -195,6 +187,25 @@ class MainActivity : ComponentActivity() {
         .addConverterFactory(GsonConverterFactory.create(gson))
         .build()
         .create(AptoideApi::class.java)
+
+    private val parsers: Map<DownloadSource, ApkSourceParser> by lazy {
+        val playHttpClient = PlayHttpClient(Cache(File(cacheDir, "play-cache"), 64L * 1024L * 1024L))
+        val parserContext = SourceParserContext(
+            fetcher = OkHttpSourceTextFetcher(client),
+            apkPureApi = apkPureApi,
+            aptoideApi = aptoideApi,
+            playHttpClient = playHttpClient,
+            appContext = this
+        )
+        listOf(
+            ApkMirrorParser(parserContext),
+            UptodownParser(parserContext),
+            ApkPureParser(parserContext),
+            ApkComboParser(parserContext),
+            AptoideParser(parserContext),
+            AuroraParser(parserContext)
+        ).associateBy { it.source }
+    }
 
     private var request by mutableStateOf<HelperRequest?>(null)
     private var uiState by mutableStateOf<UiState>(UiState.Idle)
@@ -380,140 +391,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun resolveVersionHistory(
+    private suspend fun resolveVersionHistory(
         request: HelperRequest,
         source: DownloadSource
-    ): List<DownloadCandidate> = when (source) {
-        DownloadSource.APK_MIRROR -> apkMirrorVersionHistory(request)
-        DownloadSource.UPTODOWN -> uptodownVersionHistory(request)
-        else -> emptyList()
-    }
+    ): List<DownloadCandidate> =
+        parsers[source]?.resolveHistory(request).orEmpty()
 
-    private fun apkMirrorVersionHistory(request: HelperRequest): List<DownloadCandidate> {
-        val searchDoc = fetchDocument(apkMirrorPackageSearchUrl(request.packageName))
-        val appPageUrl = resolveApkMirrorAppPage(searchDoc, request) ?: return emptyList()
-        val category = appPageUrl.trimEnd('/').substringAfterLast('/').takeIf(String::isNotBlank)
-            ?: return emptyList()
-
-        val releaseUrls = mutableListOf<String>()
-        for (page in 1..5) {
-            val pageUrl = if (page == 1) {
-                apkMirrorUploadsUrl(appPageUrl)
-            } else {
-                "https://www.apkmirror.com/uploads/page/$page/?appcategory=$category"
-            }
-            val doc = runCatching { fetchDocument(pageUrl, referer = appPageUrl) }.getOrNull() ?: continue
-            val links = apkMirrorReleaseLinks(doc)
-            if (links.isEmpty()) break
-            releaseUrls += links
-        }
-
-        return releaseUrls
-            .distinct()
-            .mapNotNull { releaseUrl ->
-                val versionName = apkMirrorVersionFromReleaseUrl(releaseUrl) ?: return@mapNotNull null
-                DownloadCandidate(
-                    source = DownloadSource.APK_MIRROR,
-                    name = request.appName,
-                    packageName = request.packageName,
-                    versionName = versionName,
-                    versionCode = null,
-                    url = releaseUrl,
-                    fileKind = "web",
-                    option = CandidateOption.LATEST,
-                    directDownload = false,
-                    versionStatus = request.versionStatus(versionName, null),
-                    formatMatches = true,
-                    note = null
-                )
-            }
-            .sortedWith { left, right -> compareVersionNames(right.versionName, left.versionName) }
-    }
-
-    private fun uptodownVersionHistory(request: HelperRequest): List<DownloadCandidate> {
-        val detailUrl = uptodownDetailUrls(request).firstOrNull() ?: return emptyList()
-        val normalizedDetailUrl = detailUrl.trimEnd('/')
-        val downloadPageUrl = "$normalizedDetailUrl/download"
-        val pageDoc = fetchDocument(downloadPageUrl)
-        if (uptodownPackageName(pageDoc) != request.packageName) return emptyList()
-        val dataCode = uptodownDataCode(pageDoc) ?: return emptyList()
-
-        val candidates = buildList {
-            for (page in 1..20) {
-                val entries = runCatching {
-                    gson.fromJson(
-                        fetchText(
-                            "$normalizedDetailUrl/apps/$dataCode/versions/$page",
-                            referer = "$normalizedDetailUrl/versions"
-                        ),
-                        UptodownVersionResponse::class.java
-                    ).data
-                }.getOrDefault(emptyList())
-                if (entries.isEmpty()) break
-
-                entries.forEach { entry ->
-                    val versionName = entry.version?.trim()?.takeIf(String::isNotBlank) ?: return@forEach
-                    val versionPageUrl = uptodownVersionPageUrl(entry) ?: return@forEach
-                    val fileKind = (entry.kindFile ?: entry.titleKindFile ?: "apk").lowercase(Locale.US)
-                    add(
-                        DownloadCandidate(
-                            source = DownloadSource.UPTODOWN,
-                            name = request.appName,
-                            packageName = request.packageName,
-                            versionName = versionName,
-                            versionCode = null,
-                            url = versionPageUrl,
-                            fileKind = fileKind,
-                            option = CandidateOption.LATEST,
-                            directDownload = false,
-                            versionStatus = request.versionStatus(versionName, null),
-                            formatMatches = request.acceptsFormat(fileKind),
-                            note = null
-                        )
-                    )
-                }
-            }
-        }
-
-        return candidates
-            .distinctBy { it.versionName?.normalizedVersionName() }
-            .sortedWith { left, right -> compareVersionNames(right.versionName, left.versionName) }
-    }
-
-    private fun resolveHistoryCandidate(
+    private suspend fun resolveHistoryCandidate(
         request: HelperRequest,
         candidate: DownloadCandidate
-    ): DownloadCandidate? = when (candidate.source) {
-        DownloadSource.APK_MIRROR -> apkMirrorCandidatesFromReleaseUrl(
-            request = request,
-            releaseUrl = candidate.url,
-            versionName = candidate.versionName,
-            option = CandidateOption.LATEST
-        ).firstOrNull { it.directDownload }
-
-        DownloadSource.UPTODOWN -> {
-            val pageDoc = fetchDocument(candidate.url)
-            val directUrl = uptodownDownloadUrlFromPage(pageDoc)
-            if (directUrl == null) {
-                null
-            } else {
-                candidate.copy(
-                    url = directUrl,
-                    directDownload = true,
-                    files = listOf(
-                        CandidateDownloadFile(
-                            url = directUrl,
-                            fileName = "${candidate.packageName}-${candidate.versionName ?: "latest"}-uptodown.${candidate.fileKind}"
-                                .sanitizeFileName(),
-                            referer = candidate.url
-                        )
-                    )
-                )
-            }
-        }
-
-        else -> null
-    }
+    ): DownloadCandidate? =
+        parsers[candidate.source]?.resolveHistoryCandidate(request, candidate)
 
     private fun startRequestLog(request: HelperRequest?) {
         requestLogs.clear()
@@ -613,27 +501,8 @@ class MainActivity : ComponentActivity() {
         request: HelperRequest,
         source: DownloadSource,
         option: CandidateOption
-    ): List<DownloadCandidate> = when (source) {
-        DownloadSource.APK_MIRROR -> when (option) {
-            CandidateOption.REQUESTED -> findApkMirrorRequested(request)
-            CandidateOption.LATEST -> findApkMirrorLatest(request)
-            CandidateOption.MANUAL -> emptyList()
-        }
-        DownloadSource.UPTODOWN -> findUptodown(request, option)
-        DownloadSource.APK_PURE -> findApkPure(request, option)
-        DownloadSource.APK_COMBO -> findApkCombo(request, option)
-        DownloadSource.APTOIDE -> when (option) {
-            CandidateOption.REQUESTED -> listOfNotNull(aptoideRequestedCandidate(request))
-            CandidateOption.LATEST -> listOfNotNull(aptoideLatestCandidate(request))
-            CandidateOption.MANUAL -> emptyList()
-        }
-        DownloadSource.AURORA -> when (option) {
-            CandidateOption.LATEST -> findAurora(request)
-            CandidateOption.REQUESTED,
-            CandidateOption.MANUAL -> emptyList()
-        }
-        DownloadSource.PLAY -> emptyList()
-    }
+    ): List<DownloadCandidate> =
+        parsers[source]?.findCandidates(request, option).orEmpty()
 
     private fun recommendedCandidatesForSource(
         request: HelperRequest,
@@ -646,8 +515,8 @@ class MainActivity : ComponentActivity() {
 
         return buildList {
             addAll(candidates.filter(request::isRequestedMatch))
-            if (source == DownloadSource.APK_MIRROR && none { it.option == CandidateOption.REQUESTED }) {
-                add(apkMirrorRequested(request))
+            if (none { it.option == CandidateOption.REQUESTED }) {
+                parsers[source]?.requestedFallbackCandidate(request)?.let(::add)
             }
         }
             .distinctBy(DownloadCandidate::identityKey)
@@ -665,8 +534,8 @@ class MainActivity : ComponentActivity() {
 
         return buildList {
             addAll(candidates.filter { it.option == CandidateOption.LATEST })
-            if (source == DownloadSource.APK_MIRROR && none { it.option == CandidateOption.LATEST }) {
-                add(apkMirrorLatest(request))
+            if (none { it.option == CandidateOption.LATEST }) {
+                parsers[source]?.latestFallbackCandidate(request)?.let(::add)
             }
             if (none { it.option == CandidateOption.LATEST }) {
                 latestWebFallback(request, source)?.let(::add)
@@ -724,97 +593,6 @@ class MainActivity : ComponentActivity() {
         return "https://www.google.com/search?q=${URLEncoder.encode(query, "UTF-8")}"
     }
 
-    private fun apkMirrorRequested(request: HelperRequest) = DownloadCandidate(
-        source = DownloadSource.APK_MIRROR,
-        name = request.appName,
-        packageName = request.packageName,
-        versionName = request.versionName,
-        versionCode = request.versionCode ?: request.versionCodes.singleOrNull(),
-        url = request.sourceHintUrlsFor(DownloadSource.APK_MIRROR).firstOrNull() ?: request.fallbackWebUrl,
-        fileKind = request.requestedFormatLabel,
-        option = CandidateOption.REQUESTED,
-        directDownload = false,
-        versionStatus = VersionStatus.REQUESTED,
-        formatMatches = true
-    )
-
-    private fun apkMirrorLatest(request: HelperRequest): DownloadCandidate =
-        apkMirrorLatestWebCandidate(request, runCatching {
-            resolveApkMirrorLatestInfo(request, apkMirrorPackageSearchUrl(request.packageName))
-        }.getOrNull())
-
-    private fun findApkMirrorLatest(request: HelperRequest): List<DownloadCandidate> {
-        val latestInfo = resolveApkMirrorLatestInfo(
-            request = request,
-            searchUrl = apkMirrorPackageSearchUrl(request.packageName)
-        )
-        val latestReleaseUrl = latestInfo
-            ?.openUrl
-            ?.takeIf(::apkMirrorLooksLikeReleaseUrl)
-        val directCandidates = latestReleaseUrl?.let { releaseUrl ->
-            apkMirrorCandidatesFromReleaseUrl(
-                request = request,
-                releaseUrl = releaseUrl,
-                versionName = latestInfo.versionName ?: apkMirrorVersionFromReleaseUrl(releaseUrl),
-                option = CandidateOption.LATEST
-            )
-        }
-
-        return directCandidates.orEmpty()
-            .ifEmpty { listOf(apkMirrorLatestWebCandidate(request, latestInfo)) }
-    }
-
-    private fun apkMirrorLatestWebCandidate(
-        request: HelperRequest,
-        latestInfo: ApkMirrorLatestInfo?
-    ): DownloadCandidate {
-        val searchUrl = apkMirrorPackageSearchUrl(request.packageName)
-        return DownloadCandidate(
-            source = DownloadSource.APK_MIRROR,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = latestInfo?.versionName,
-            versionCode = null,
-            url = latestInfo?.openUrl ?: searchUrl,
-            fileKind = "web",
-            option = CandidateOption.LATEST,
-            directDownload = false,
-            versionStatus = VersionStatus.LATEST,
-            formatMatches = true
-        )
-    }
-
-    private fun findApkMirrorRequested(request: HelperRequest): List<DownloadCandidate> {
-        if (!request.hasKnownVersionRequest) return emptyList()
-
-        val searchDoc = fetchDocument(apkMirrorPackageSearchUrl(request.packageName))
-        val appPageUrl = resolveApkMirrorAppPage(
-            searchDoc = searchDoc,
-            request = request
-        ) ?: return emptyList()
-        val appDoc = fetchDocument(appPageUrl)
-        val requested = apkMirrorRequestedReleaseUrl(
-            request = request,
-            appPageUrl = appPageUrl,
-            appDoc = appDoc
-        )?.let { releaseUrl ->
-            apkMirrorCandidatesFromReleaseUrl(
-                request = request,
-                releaseUrl = releaseUrl,
-                versionName = request.requestedVersionNames.firstOrNull()
-                    ?: apkMirrorVersionFromReleaseUrl(releaseUrl),
-                option = CandidateOption.REQUESTED
-            )
-        }
-
-        return requested.orEmpty()
-    }
-
-    private fun apkMirrorPackageSearchUrl(packageName: String): String {
-        val query = URLEncoder.encode(packageName, "UTF-8")
-        return "https://www.apkmirror.com/?post_type=app_release&searchtype=app&s=$query"
-    }
-
     private fun manualCandidates(request: HelperRequest): List<DownloadCandidate> =
         manualSourceUrls(request).map { (source, url) ->
             DownloadCandidate(
@@ -852,13 +630,11 @@ class MainActivity : ComponentActivity() {
             }
 
     private fun manualSourceUrls(request: HelperRequest): List<Pair<DownloadSource, String>> =
-        listOf(
-            DownloadSource.APK_MIRROR to apkMirrorPackageSearchUrl(request.packageName),
-            DownloadSource.UPTODOWN to uptodownSearchUrl(request.packageName),
-            DownloadSource.APK_PURE to apkPureInfoUrl(request.packageName),
-            DownloadSource.APK_COMBO to apkComboSearchUrl(request.packageName),
-            DownloadSource.APTOIDE to aptoideSearchUrl(request.packageName)
-        )
+        parsers.values
+            .mapNotNull { parser ->
+                parser.searchUrl(request.packageName)?.let { parser.source to it }
+            }
+            .sortedBy { it.first.ordinal }
 
     private fun playStoreCandidate(request: HelperRequest) = DownloadCandidate(
         source = DownloadSource.PLAY,
@@ -873,1845 +649,6 @@ class MainActivity : ComponentActivity() {
         versionStatus = VersionStatus.LATEST,
         formatMatches = true
     )
-
-    private fun resolveApkMirrorLatestInfo(
-        request: HelperRequest,
-        searchUrl: String
-    ): ApkMirrorLatestInfo? {
-        val searchDoc = fetchDocument(searchUrl)
-        val appPageUrl = resolveApkMirrorAppPage(
-            searchDoc = searchDoc,
-            request = request
-        ) ?: return ApkMirrorLatestInfo(
-            versionName = null,
-            openUrl = searchUrl
-        )
-        val searchVersion = apkMirrorSearchVersionForApp(searchDoc, appPageUrl)
-            ?: apkMirrorVersions(searchDoc.html()).firstOrNull()
-        val appDoc = fetchDocument(appPageUrl)
-        val uploadsDoc = runCatching { fetchDocument(apkMirrorUploadsUrl(appPageUrl), referer = appPageUrl) }
-            .getOrNull()
-        val latestReleaseUrl = apkMirrorLatestReleaseUrl(
-            (
-                uploadsDoc?.let { apkMirrorReleaseLinks(it, appPageUrl) }.orEmpty() +
-                    apkMirrorReleaseLinks(appDoc, appPageUrl)
-                ).distinct()
-        )
-        val latestVersion = latestReleaseUrl?.let(::apkMirrorVersionFromReleaseUrl)
-            ?: searchVersion
-            ?: apkMirrorVersions(appDoc.html()).firstOrNull()
-
-        return ApkMirrorLatestInfo(
-            versionName = latestVersion,
-            openUrl = latestReleaseUrl ?: appPageUrl
-        )
-    }
-
-    private fun resolveApkMirrorAppPage(searchDoc: Document, request: HelperRequest): String? {
-        for (candidate in apkMirrorAppPageCandidates(searchDoc, request)) {
-            val candidateDoc = runCatching { fetchDocument(candidate) }.getOrNull() ?: continue
-            if (candidateDoc.apkMirrorMatchesPackage(request.packageName)) return candidate
-        }
-
-        return null
-    }
-
-    private fun apkMirrorAppPageCandidates(searchDoc: Document, request: HelperRequest): List<String> {
-        val expectedSlugs = apkMirrorExpectedAppSlugs(request)
-        return searchDoc.select("a[href]")
-            .asSequence()
-            .mapNotNull { apkMirrorAbsoluteUrl(it.attr("href")) }
-            .filter { url ->
-                runCatching {
-                    java.net.URI(url).path.matches(Regex("""/apk/[^/]+/[^/]+/?"""))
-                }.getOrDefault(false)
-            }
-            .distinct()
-            .sortedBy { url -> apkMirrorAppSlugScore(url, expectedSlugs) }
-            .take(20)
-            .toList()
-    }
-
-    private fun apkMirrorExpectedAppSlugs(request: HelperRequest): Set<String> =
-        buildSet {
-            add(request.appName.slugForUrl())
-            val packageParts = request.packageName.split(".")
-            packageParts.takeLast(2)
-                .joinToString("-")
-                .slugForUrl()
-                .takeIf(String::isNotBlank)
-                ?.let(::add)
-            packageParts.takeLast(3)
-                .joinToString("-")
-                .slugForUrl()
-                .takeIf(String::isNotBlank)
-                ?.let(::add)
-        }
-
-    private fun apkMirrorAppSlugScore(url: String, expectedSlugs: Set<String>): Int {
-        val appSlug = runCatching {
-            java.net.URI(url).path.trim('/').split('/').getOrNull(2).orEmpty()
-        }.getOrDefault("")
-        return when {
-            appSlug in expectedSlugs -> 0
-            expectedSlugs.any { appSlug.endsWith(it) } -> 1
-            expectedSlugs.any { appSlug.contains(it) } -> 2
-            else -> 3
-        }
-    }
-
-    private fun apkMirrorSearchVersionForApp(searchDoc: Document, appPageUrl: String): String? {
-        val appPath = runCatching { java.net.URI(appPageUrl).path.trimEnd('/') }.getOrNull()
-            ?: return null
-        val row = searchDoc.select("div.appRow")
-            .firstOrNull { row ->
-                row.select("a[href]")
-                    .asSequence()
-                    .map { it.absUrl("href") }
-                    .any { url ->
-                        runCatching { java.net.URI(url).path.trimEnd('/') == appPath }
-                            .getOrDefault(false)
-                    }
-            }
-
-        return row
-            ?.select("img[alt]")
-            ?.asSequence()
-            ?.map { it.attr("alt") }
-            ?.mapNotNull { alt -> Regex("""\b(\d+(?:\.\d+)+(?:[.\w-]*)?)\b""").findAll(alt).lastOrNull()?.value }
-            ?.firstOrNull()
-    }
-
-    private fun apkMirrorVersions(html: String): List<String> =
-        Regex(
-            """Version:\s*</span>\s*<span[^>]*class=["'][^"']*infoSlide-value[^"']*["'][^>]*>\s*([^<]+?)\s*</span>""",
-            RegexOption.IGNORE_CASE
-        )
-            .findAll(html)
-            .mapNotNull { match -> match.groupValues.getOrNull(1)?.trim()?.takeIf(String::isNotBlank) }
-            .filterNot { it.contains("alpha", ignoreCase = true) || it.contains("beta", ignoreCase = true) }
-            .distinct()
-            .toList()
-
-    private fun apkMirrorReleaseLinks(doc: Document, appPageUrl: String? = null): List<String> {
-        val appPath = appPageUrl
-            ?.let { url -> runCatching { java.net.URI(url).path.trimEnd('/') }.getOrNull() }
-
-        return doc.select("a[href]")
-            .asSequence()
-            .mapNotNull { link -> apkMirrorAbsoluteUrl(link.attr("href")) }
-            .filter { url ->
-                runCatching {
-                    val path = java.net.URI(url).path
-                    path.startsWith("/apk/") &&
-                        path.trimEnd('/').endsWith("-release") &&
-                        (appPath == null || path.startsWith("$appPath/"))
-                }.getOrDefault(false)
-            }
-            .distinct()
-            .toList()
-    }
-
-    private fun apkMirrorLatestReleaseUrl(releaseLinks: List<String>): String? =
-        releaseLinks
-            .filterNot { it.contains("alpha", ignoreCase = true) || it.contains("beta", ignoreCase = true) }
-            .ifEmpty { releaseLinks }
-            .maxWithOrNull { left, right ->
-                compareVersionNames(
-                    apkMirrorVersionFromReleaseUrl(left),
-                    apkMirrorVersionFromReleaseUrl(right)
-                )
-            }
-
-    private fun apkMirrorRequestedReleaseUrl(
-        request: HelperRequest,
-        appPageUrl: String,
-        appDoc: Document
-    ): String? {
-        val requestedVersions = request.requestedVersionNames
-        if (requestedVersions.isEmpty()) return null
-
-        request.sourceHintUrlsFor(DownloadSource.APK_MIRROR)
-            .asSequence()
-            .mapNotNull(::apkMirrorAbsoluteUrl)
-            .firstOrNull { url ->
-                apkMirrorLooksLikeReleaseUrl(url) &&
-                    requestedVersions.any { version -> apkMirrorReleaseUrlMatchesVersion(url, version) }
-            }
-            ?.let { return it }
-
-        apkMirrorReleaseLinks(appDoc, appPageUrl)
-            .firstOrNull { url ->
-                requestedVersions.any { version -> apkMirrorReleaseUrlMatchesVersion(url, version) }
-            }
-            ?.let { return it }
-
-        val category = appPageUrl.trimEnd('/').substringAfterLast('/').takeIf(String::isNotBlank)
-            ?: return null
-        val uploadsUrl = "https://www.apkmirror.com/uploads/?appcategory=$category"
-        for (page in 1..5) {
-            val pageUrl = if (page == 1) {
-                uploadsUrl
-            } else {
-                "https://www.apkmirror.com/uploads/page/$page/?appcategory=$category"
-            }
-            val doc = runCatching { fetchDocument(pageUrl, referer = appPageUrl) }
-                .onFailure { Log.w(TAG, "APKMirror uploads page resolve failed: $pageUrl", it) }
-                .getOrNull()
-                ?: continue
-
-            apkMirrorReleaseLinks(doc)
-                .firstOrNull { url ->
-                    requestedVersions.any { version -> apkMirrorReleaseUrlMatchesVersion(url, version) }
-                }
-                ?.let { return it }
-        }
-
-        return null
-    }
-
-    private fun apkMirrorUploadsUrl(appPageUrl: String): String {
-        val category = runCatching {
-            Uri.parse(appPageUrl).path
-                ?.trim('/')
-                ?.substringAfterLast('/')
-                ?.takeIf(String::isNotBlank)
-        }.getOrNull()
-            ?: appPageUrl.substringBefore('#').substringBefore('?').trimEnd('/').substringAfterLast('/')
-        return "https://www.apkmirror.com/uploads/?appcategory=$category"
-    }
-
-    private fun apkMirrorCandidatesFromReleaseUrl(
-        request: HelperRequest,
-        releaseUrl: String,
-        versionName: String?,
-        option: CandidateOption
-    ): List<DownloadCandidate> {
-        val directCandidates = runCatching {
-            apkMirrorDirectCandidatesFromReleaseUrl(
-                request = request,
-                releaseUrl = releaseUrl,
-                versionName = versionName,
-                option = option
-            )
-        }
-            .onFailure { Log.w(TAG, "APKMirror direct resolve failed: $releaseUrl", it) }
-        val directFailureMessage = directCandidates.exceptionOrNull()
-            ?.let { sourceFailureMessage(DownloadSource.APK_MIRROR, it) }
-        val resolvedDirectCandidates = directCandidates.getOrDefault(emptyList())
-
-        return resolvedDirectCandidates.ifEmpty {
-            listOf(
-                apkMirrorReleaseFallbackCandidate(
-                    request = request,
-                    releaseUrl = releaseUrl,
-                    versionName = versionName,
-                    option = option,
-                    note = directFailureMessage
-                )
-            )
-        }
-    }
-
-    private fun apkMirrorDirectCandidatesFromReleaseUrl(
-        request: HelperRequest,
-        releaseUrl: String,
-        versionName: String?,
-        option: CandidateOption
-    ): List<DownloadCandidate> {
-        val releaseDoc = fetchDocument(releaseUrl)
-        if (releaseDoc.isCloudflareChallenge()) return emptyList()
-
-        val variants = apkMirrorVariants(releaseDoc)
-        val selectedVariants = if (variants.isEmpty()) {
-            listOf(null)
-        } else {
-            apkMirrorSelectableVariants(request, variants)
-        }
-        if (selectedVariants.isEmpty()) return emptyList()
-
-        return selectedVariants
-            .mapNotNull { variant ->
-                apkMirrorDirectCandidateFromReleaseUrl(
-                    request = request,
-                    releaseUrl = releaseUrl,
-                    versionName = versionName,
-                    option = option,
-                    variant = variant
-                )
-            }
-            .distinctBy(DownloadCandidate::identityKey)
-    }
-
-    private fun apkMirrorDirectCandidateFromReleaseUrl(
-        request: HelperRequest,
-        releaseUrl: String,
-        versionName: String?,
-        option: CandidateOption,
-        variant: ApkMirrorVariant?
-    ): DownloadCandidate? {
-        val variantPageUrl = variant?.url ?: releaseUrl
-        val variantDoc = if (variant == null) {
-            fetchDocument(releaseUrl)
-        } else {
-            fetchDocument(variantPageUrl, referer = releaseUrl)
-        }
-        if (variantDoc.isCloudflareChallenge()) return null
-
-        val isBundle = variant?.isBundle ?: apkMirrorPageLooksBundle(variantDoc)
-        val downloadButtonUrl = apkMirrorDownloadButtonUrl(variantDoc, isBundle) ?: return null
-        val downloadDoc = fetchDocument(downloadButtonUrl, referer = variantPageUrl)
-        if (downloadDoc.isCloudflareChallenge()) return null
-
-        val finalUrl = apkMirrorFinalDownloadUrl(downloadDoc) ?: return null
-        val resolvedVersion = versionName
-            ?: apkMirrorVersionFromReleaseUrl(releaseUrl)
-        val fileKind = variant?.fileKind ?: if (isBundle) "apkm" else fileKindFromUrl(finalUrl)
-        if (!request.acceptsFormat(fileKind)) return null
-        val variantLabel = variant?.displayLabel()
-        val variantFileSuffix = variantLabel.variantFileSuffix()
-
-        return DownloadCandidate(
-            source = DownloadSource.APK_MIRROR,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = resolvedVersion,
-            versionCode = null,
-            url = finalUrl,
-            fileKind = fileKind,
-            option = option,
-            directDownload = true,
-            versionStatus = request.versionStatus(resolvedVersion, null),
-            formatMatches = request.acceptsFormat(fileKind),
-            variantLabel = variantLabel,
-            files = listOf(
-                CandidateDownloadFile(
-                    url = finalUrl,
-                    fileName = "${request.packageName}-${resolvedVersion ?: option.name.lowercase(Locale.US)}-apkmirror$variantFileSuffix.$fileKind"
-                        .sanitizeFileName(),
-                    referer = downloadButtonUrl
-                )
-            )
-        )
-    }
-
-    private fun apkMirrorReleaseFallbackCandidate(
-        request: HelperRequest,
-        releaseUrl: String,
-        versionName: String?,
-        option: CandidateOption,
-        note: String? = null
-    ) = DownloadCandidate(
-        source = DownloadSource.APK_MIRROR,
-        name = request.appName,
-        packageName = request.packageName,
-        versionName = versionName ?: apkMirrorVersionFromReleaseUrl(releaseUrl),
-        versionCode = null,
-        url = releaseUrl,
-        fileKind = "web",
-        option = option,
-        directDownload = false,
-        versionStatus = request.versionStatus(versionName ?: apkMirrorVersionFromReleaseUrl(releaseUrl), null),
-        formatMatches = true,
-        note = note
-    )
-
-    private fun apkMirrorVariants(releaseDoc: Document): List<ApkMirrorVariant> =
-        releaseDoc.select("div.table-row.headerFont")
-            .mapNotNull(::apkMirrorVariantFromRow)
-
-    private fun apkMirrorSelectableVariants(
-        request: HelperRequest,
-        variants: List<ApkMirrorVariant>
-    ): List<ApkMirrorVariant> {
-        val wantedKinds = apkMirrorWantedVariantKinds(request)
-        for (kind in wantedKinds) {
-            val typedVariants = variants.filter {
-                it.fileKind == kind &&
-                    request.acceptsFormat(it.fileKind)
-            }
-            typedVariants.filter { apkMirrorDpiMatches(it.dpi) }
-                .takeIf(List<ApkMirrorVariant>::isNotEmpty)
-                ?.let { return it }
-            typedVariants.takeIf(List<ApkMirrorVariant>::isNotEmpty)
-                ?.let { return it }
-        }
-
-        val acceptedVariants = variants.filter { request.acceptsFormat(it.fileKind) }
-        return acceptedVariants.filter { apkMirrorDpiMatches(it.dpi) }
-            .takeIf(List<ApkMirrorVariant>::isNotEmpty)
-            ?: acceptedVariants
-    }
-
-    private fun apkMirrorVariantFromRow(row: Element): ApkMirrorVariant? {
-        val url = row.selectFirst("div.table-cell:nth-child(1) a[href]")
-            ?.attr("href")
-            ?.let(::apkMirrorAbsoluteUrl)
-            ?: return null
-        val type = row.selectFirst("div.table-cell:nth-child(1) span.apkm-badge")
-            ?.text()
-            ?.trim()
-            ?.uppercase(Locale.US)
-            ?.takeIf(String::isNotBlank)
-            ?: "APK"
-        val fileKind = apkMirrorVariantFileKind(type)
-        val cells = row.select("div.table-cell")
-        val arch = cells.getOrNull(1)?.text()?.trim()?.takeIf(String::isNotBlank)
-        val dpi = cells.getOrNull(3)?.text()?.trim()?.takeIf(String::isNotBlank)
-
-        return ApkMirrorVariant(
-            url = url,
-            type = type,
-            fileKind = fileKind,
-            arch = arch,
-            dpi = dpi,
-            isBundle = fileKind != "apk"
-        )
-    }
-
-    private fun apkMirrorWantedVariantKinds(request: HelperRequest): List<String> {
-        val requestedKinds = request.requestedFileKinds
-        return DOWNLOAD_FILE_KIND_ORDER
-            .filter { it in requestedKinds }
-            .ifEmpty { DOWNLOAD_FILE_KIND_ORDER }
-    }
-
-    private fun apkMirrorVariantFileKind(type: String): String {
-        val normalized = type.lowercase(Locale.US)
-        return when {
-            "apks" in normalized -> "apks"
-            "xapk" in normalized -> "xapk"
-            "apkm" in normalized || "bundle" in normalized -> "apkm"
-            else -> "apk"
-        }
-    }
-
-    private fun ApkMirrorVariant.displayLabel(): String? {
-        val archLabel = arch?.archDisplayLabel()
-        val dpiLabel = dpi
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.takeUnless { it.equals("nodpi", ignoreCase = true) || it.equals("anydpi", ignoreCase = true) }
-        return listOfNotNull(archLabel, dpiLabel)
-            .joinToString(" / ")
-            .takeIf(String::isNotBlank)
-    }
-
-    private fun apkMirrorDpiMatches(dpi: String?): Boolean {
-        val normalized = dpi?.lowercase(Locale.US)?.takeIf(String::isNotBlank) ?: return true
-        return normalized == "nodpi" || normalized == "anydpi"
-    }
-
-    private fun apkMirrorDownloadButtonUrl(doc: Document, isBundle: Boolean): String? {
-        val urls = (
-            doc.select("a.downloadButton[href]").map { it.attr("href") } +
-                doc.select("a[href*=/download/?key][href]").map { it.attr("href") }
-            )
-            .mapNotNull(::apkMirrorAbsoluteUrl)
-            .distinct()
-
-        return if (isBundle) {
-            urls.firstOrNull { !it.contains("forcebaseapk", ignoreCase = true) } ?: urls.firstOrNull()
-        } else {
-            urls.firstOrNull { it.contains("forcebaseapk", ignoreCase = true) } ?: urls.firstOrNull()
-        }
-    }
-
-    private fun apkMirrorFinalDownloadUrl(doc: Document): String? =
-        doc.selectFirst("a#download-link[href]")
-            ?.attr("href")
-            ?.let(::apkMirrorAbsoluteUrl)
-            ?: doc.select("a[href]")
-                .asSequence()
-                .map { it.attr("href") }
-                .firstOrNull { href ->
-                    href.contains("download.php", ignoreCase = true) ||
-                        href.contains("/download/?key=", ignoreCase = true)
-                }
-                ?.let(::apkMirrorAbsoluteUrl)
-
-    private fun apkMirrorPageLooksBundle(doc: Document): Boolean =
-        doc.select("span.apkm-badge, .apkm-badge")
-            .any { it.text().contains("bundle", ignoreCase = true) }
-
-    private fun apkMirrorVersionFromReleaseUrl(url: String): String? {
-        val slug = runCatching {
-            java.net.URI(url).path.trimEnd('/').substringAfterLast('/').removeSuffix("-release")
-        }.getOrNull() ?: return null
-        return Regex("""\d+(?:[-.]\d+)+(?:[-.](?:alpha|beta|rc)\d*)?""", RegexOption.IGNORE_CASE)
-            .findAll(slug)
-            .lastOrNull()
-            ?.value
-            ?.replace("-", ".")
-    }
-
-    private fun apkMirrorReleaseUrlMatchesVersion(url: String, version: String): Boolean =
-        apkMirrorLooksLikeReleaseUrl(url) &&
-            (
-                apkMirrorVersionFromReleaseUrl(url).versionNameEquals(version) ||
-                    runCatching { java.net.URI(url).path.lowercase(Locale.US) }
-                        .getOrDefault(url.lowercase(Locale.US))
-                        .contains(version.apkMirrorVersionSlug())
-                )
-
-    private fun apkMirrorLooksLikeReleaseUrl(url: String): Boolean =
-        runCatching {
-            val path = java.net.URI(url).path
-            path.startsWith("/apk/") && path.trimEnd('/').endsWith("-release")
-        }.getOrDefault(false)
-
-    private fun apkMirrorAbsoluteUrl(url: String): String? {
-        val normalized = url.substringBefore("#").trim().replace("&amp;", "&")
-        if (normalized.isBlank()) return null
-        return when {
-            normalized.startsWith("http://", ignoreCase = true) ||
-                normalized.startsWith("https://", ignoreCase = true) -> normalized
-            normalized.startsWith("//") -> "https:$normalized"
-            normalized.startsWith("/") -> "https://www.apkmirror.com$normalized"
-            else -> "https://www.apkmirror.com/$normalized"
-        }.normalizedHttpUrlOrNull()
-    }
-
-    private fun Document.isCloudflareChallenge(): Boolean =
-        title().contains("Just a moment", ignoreCase = true) ||
-            text().contains("Enable JavaScript and cookies to continue", ignoreCase = true)
-
-    private fun Document.apkMirrorMatchesPackage(packageName: String): Boolean {
-        val hasPackageId = select("[id]").any { it.id() == packageName }
-        val hasPlayPackage = select("a[href]")
-            .asSequence()
-            .map { it.absUrl("href").ifBlank { it.attr("href") } }
-            .any { url ->
-                url.contains("play.google.com", ignoreCase = true) &&
-                    runCatching { Uri.parse(url).getQueryParameter("id") == packageName }
-                        .getOrDefault(false)
-            }
-        val tablePackage = parseInfoTableValue(this, "Package Name") == packageName
-        return hasPackageId || hasPlayPackage || tablePackage
-    }
-
-    private fun findAurora(request: HelperRequest): List<DownloadCandidate> {
-        val auth = playAuth()
-        val app = AppDetailsHelper(auth)
-            .using(playHttpClient)
-            .getAppByPackageName(request.packageName)
-
-        if (app.packageName != request.packageName || app.versionCode <= 0L) return emptyList()
-
-        val playFiles = getPlayInstallFiles(app)
-        val files = playFiles
-            .mapIndexedNotNull { index, file ->
-                val url = file.url.normalizedHttpUrlOrNull()
-                if (url == null) {
-                    Log.w(TAG, "Aurora returned invalid download URL for ${request.packageName}: ${file.url}")
-                    return@mapIndexedNotNull null
-                }
-                CandidateDownloadFile(
-                    url = url,
-                    fileName = playFileName(file, index),
-                    size = file.size
-                )
-            }
-
-        if (files.size != playFiles.size) return emptyList()
-        if (files.isEmpty()) return emptyList()
-
-        val fileKind = if (files.size > 1) "apks" else "apk"
-        return listOf(
-            DownloadCandidate(
-                source = DownloadSource.AURORA,
-                name = app.displayName.ifBlank { request.appName },
-                packageName = app.packageName,
-                versionName = app.versionName,
-                versionCode = app.versionCode,
-                url = playStoreUrl(app.packageName),
-                fileKind = fileKind,
-                option = CandidateOption.LATEST,
-                directDownload = true,
-                versionStatus = VersionStatus.LATEST,
-                formatMatches = request.acceptsFormat(fileKind),
-                files = files
-            )
-        )
-    }
-
-    private fun playAuth(): AuthData {
-        playAuthData?.let { return it }
-
-        val properties = NativeDeviceInfoProvider(this).getNativeDeviceProperties()
-        val response = playHttpClient.postAuth(AURORA_AUTH_URL, gson.toJson(properties).toByteArray())
-        check(response.isSuccessful) { "Aurora auth failed: HTTP ${response.code}" }
-
-        return gson.fromJson(String(response.responseBytes), AuthData::class.java).also {
-            playAuthData = it
-        }
-    }
-
-    private fun getPlayInstallFiles(app: App): List<PlayFile> =
-        PurchaseHelper(playAuth())
-            .using(playHttpClient)
-            .purchase(app.packageName, app.versionCode, app.offerType)
-            .filter { it.type == PlayFile.Type.BASE || it.type == PlayFile.Type.SPLIT }
-
-    private fun playFileName(file: PlayFile, index: Int): String =
-        when (file.type) {
-            PlayFile.Type.BASE -> "base.apk"
-            PlayFile.Type.SPLIT -> "split_$index.apk"
-            else -> "file_$index.apk"
-        }
-
-    private fun findApkCombo(request: HelperRequest, option: CandidateOption): List<DownloadCandidate> =
-        when (option) {
-            CandidateOption.REQUESTED -> apkComboRequestedCandidates(request)
-            CandidateOption.LATEST -> apkComboLatestCandidates(request)
-            CandidateOption.MANUAL -> emptyList()
-        }
-
-    private fun apkComboLatestCandidates(request: HelperRequest): List<DownloadCandidate> =
-        apkComboDownloadPageUrls(request)
-            .firstNotNullOfOrNull { pageUrl ->
-                runCatching {
-                    apkComboCandidatesFromPage(
-                        request = request,
-                        pageUrl = pageUrl,
-                        option = CandidateOption.LATEST
-                    ).takeIf(List<DownloadCandidate>::isNotEmpty)
-                }.getOrNull()
-            }
-            .orEmpty()
-
-    private fun apkComboRequestedCandidates(request: HelperRequest): List<DownloadCandidate> {
-        val latestPageUrl = apkComboDownloadPageUrls(request).first()
-        return request.requestedVersionNames.firstNotNullOfOrNull { requestedVersion ->
-            runCatching {
-                apkComboVersionedPageUrls(request, requestedVersion)
-                    .firstNotNullOfOrNull { pageUrl ->
-                        apkComboCandidatesFromPage(
-                            request = request,
-                            pageUrl = pageUrl,
-                            option = CandidateOption.REQUESTED
-                        ).filter(request::isRequestedMatch)
-                            .takeIf(List<DownloadCandidate>::isNotEmpty)
-                    }
-                    ?: apkComboOldVersionPageUrl(request, latestPageUrl, requestedVersion)
-                        ?.let { oldPageUrl ->
-                            apkComboCandidatesFromPage(
-                                request = request,
-                                pageUrl = oldPageUrl,
-                                option = CandidateOption.REQUESTED
-                            ).filter(request::isRequestedMatch)
-                                .takeIf(List<DownloadCandidate>::isNotEmpty)
-                        }
-            }.getOrNull()
-        }.orEmpty()
-    }
-
-    private fun apkComboDownloadPageUrls(request: HelperRequest): List<String> {
-        val defaultUrl = "https://apkcombo.com/${request.appName.slugForUrl()}/${request.packageName}/download/apk"
-        val packageSearchUrl = "${apkComboSearchUrl(request.packageName)}/download/apk"
-        val hintedUrls = request.sourceHintUrlsFor(DownloadSource.APK_COMBO).mapNotNull { hint ->
-            val normalized = hint.substringBefore("?").substringBefore("#").trimEnd('/')
-            when {
-                normalized.contains("/download/", ignoreCase = true) -> normalized
-                normalized.contains("/${request.packageName}", ignoreCase = true) -> "$normalized/download/apk"
-                else -> null
-            }
-        }
-
-        return (listOf(packageSearchUrl) + hintedUrls + defaultUrl).distinct()
-    }
-
-    private fun apkComboSearchUrl(packageName: String): String =
-        "https://apkcombo.com/search/$packageName"
-
-    private fun apkComboVersionedPageUrls(request: HelperRequest, versionName: String): List<String> {
-        val suffixes = apkComboWantedSuffixes(request)
-        val searchBase = "https://apkcombo.com/search/${request.packageName}/download"
-        val defaultBase = "https://apkcombo.com/${request.appName.slugForUrl()}/${request.packageName}/download"
-        val hintedBases = request.sourceHintUrlsFor(DownloadSource.APK_COMBO).mapNotNull { hint ->
-            val normalized = hint.substringBefore("?").substringBefore("#").trimEnd('/')
-            when {
-                normalized.contains("/download/", ignoreCase = true) -> normalized.substringBeforeLast("/download")
-                normalized.contains("/${request.packageName}", ignoreCase = true) -> normalized
-                else -> null
-            }?.trimEnd('/')?.let { "$it/download" }
-        }
-
-        return (listOf(searchBase) + hintedBases + defaultBase)
-            .flatMap { base -> suffixes.map { suffix -> "$base/phone-$versionName-$suffix" } }
-            .distinct()
-    }
-
-    private fun apkComboWantedSuffixes(request: HelperRequest): List<String> {
-        val requestedKinds = request.requestedFileKinds
-        return APK_COMBO_FILE_KIND_ORDER
-            .filter { it in requestedKinds }
-            .ifEmpty { APK_COMBO_FILE_KIND_ORDER }
-    }
-
-    private fun apkComboOldVersionPageUrl(
-        request: HelperRequest,
-        latestPageUrl: String,
-        requestedVersion: String
-    ): String? {
-        val latestDoc = fetchDocument(latestPageUrl)
-        val visibleOldVersion = latestDoc.select("a.ver-item[href]")
-            .firstOrNull { item ->
-                val itemVersion = apkComboVersionFromText(item.text()) ?: item.text()
-                itemVersion.versionNameEquals(requestedVersion)
-            }
-            ?.absUrl("href")
-        if (!visibleOldVersion.isNullOrBlank()) return visibleOldVersion
-
-        val oldVersionsUrl = apkComboOldVersionsUrl(request, latestPageUrl)
-        val oldVersionsDoc = fetchDocument(oldVersionsUrl)
-        return oldVersionsDoc.select("a.ver-item[href]")
-            .firstOrNull { item ->
-                val itemVersion = apkComboVersionFromText(item.text()) ?: item.text()
-                itemVersion.versionNameEquals(requestedVersion)
-            }
-            ?.absUrl("href")
-    }
-
-    private fun apkComboOldVersionsUrl(request: HelperRequest, latestPageUrl: String): String {
-        val uri = runCatching { java.net.URI(latestPageUrl) }.getOrNull()
-        val segments = uri?.path
-            ?.trim('/')
-            ?.split('/')
-            .orEmpty()
-        val packageIndex = segments.indexOf(request.packageName)
-        if (uri != null && packageIndex >= 0) {
-            val appPath = segments.take(packageIndex + 1).joinToString("/")
-            return "${uri.scheme}://${uri.host}/$appPath/old-versions/"
-        }
-
-        return "https://apkcombo.com/${request.appName.slugForUrl()}/${request.packageName}/old-versions/"
-    }
-
-    private fun apkComboCandidatesFromPage(
-        request: HelperRequest,
-        pageUrl: String,
-        option: CandidateOption
-    ): List<DownloadCandidate> {
-        val doc = fetchDocument(pageUrl)
-        if (!apkComboPageMatchesPackage(doc, pageUrl, request.packageName)) return emptyList()
-
-        val checkIn = fetchText("https://apkcombo.com/checkin", referer = pageUrl).trim()
-        val versionName = apkComboVersion(doc, pageUrl) ?: request.versionName.takeIf { option == CandidateOption.REQUESTED }
-
-        return doc.select("a.variant[href]")
-            .mapNotNull { variant ->
-                apkComboCandidateFromVariant(
-                    request = request,
-                    pageUrl = pageUrl,
-                    option = option,
-                    versionName = versionName,
-                    checkIn = checkIn,
-                    variant = variant
-                )
-            }
-            .distinctBy(DownloadCandidate::identityKey)
-    }
-
-    private fun apkComboCandidateFromVariant(
-        request: HelperRequest,
-        pageUrl: String,
-        option: CandidateOption,
-        versionName: String?,
-        checkIn: String,
-        variant: Element
-    ): DownloadCandidate? {
-        val href = variant.absUrl("href").ifBlank { "https://apkcombo.com${variant.attr("href")}" }
-        val downloadUrl = (if (checkIn.isNotBlank()) "$href&$checkIn" else href)
-            .normalizedHttpUrlOrNull()
-            ?: return null
-        val versionCode = apkComboVersionCode(href)
-        val fileKind = fileKindFromUrl(href)
-        if (!request.acceptsFormat(fileKind)) return null
-        val variantLabel = apkComboVariantLabel(variant)
-        val fileName = "${request.packageName}-${versionName ?: "latest"}-apkcombo${variantLabel.variantFileSuffix()}.$fileKind"
-            .sanitizeFileName()
-
-        return DownloadCandidate(
-            source = DownloadSource.APK_COMBO,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = versionName,
-            versionCode = versionCode,
-            url = downloadUrl,
-            fileKind = fileKind,
-            option = option,
-            directDownload = true,
-            versionStatus = request.versionStatus(versionName, versionCode),
-            formatMatches = request.acceptsFormat(fileKind),
-            variantLabel = variantLabel,
-            files = listOf(
-                CandidateDownloadFile(
-                    url = downloadUrl,
-                    fileName = fileName,
-                    referer = pageUrl
-                )
-            )
-        )
-    }
-
-    private fun apkComboVariantLabel(variant: Element): String? =
-        listOf(
-            variant.attr("data-arch"),
-            variant.attr("data-abi"),
-            variant.attr("data-cpu"),
-            variant.attr("title"),
-            variant.text()
-        )
-            .firstOrNull { it.isNotBlank() }
-            ?.replace(Regex("""\s+"""), " ")
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.archDisplayLabel()
-
-    private fun apkComboPageMatchesPackage(doc: Document, pageUrl: String, packageName: String): Boolean {
-        if (pageUrl.contains("/search/$packageName/", ignoreCase = true) ||
-            pageUrl.contains("/$packageName/", ignoreCase = true)
-        ) {
-            return true
-        }
-
-        val canonicalPackage = doc.selectFirst("link[rel=canonical]")
-            ?.absUrl("href")
-            ?.let { url -> runCatching { java.net.URI(url).path.trim('/').split('/').lastOrNull() }.getOrNull() }
-        return canonicalPackage == packageName || doc.html().contains(packageName)
-    }
-
-    private fun apkComboVersion(doc: Document, pageUrl: String): String? {
-        Regex("""phone-(.+?)-(?:apk|xapk|apks|apkm)(?:[/?#]|$)""", RegexOption.IGNORE_CASE)
-            .find(pageUrl)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.let { return it }
-
-        val html = doc.html()
-        Regex("\"softwareVersion\"\\s*:\\s*\"([^\"]+)\"")
-            .find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.let { return it }
-
-        val description = doc.selectFirst("meta[name=description]")?.attr("content").orEmpty()
-        Regex("""Version:\s*([^-]+?)\s*-""")
-            .find(description)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.let { return it }
-
-        Regex("""Version:\s*(.*?)(?=\s+-\s+[A-Za-z0-9_.]+)""")
-            .find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.replace(Regex("<[^>]+>"), "")
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.let { return it }
-
-        Regex("""Version</[^>]+>\s*<[^>]+>([^<]+)""")
-            .find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.let { return it }
-
-        Regex("""phone-([0-9][^-]+)-apk""")
-            .find(html)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
-            ?.let { return it }
-
-        return doc.selectFirst("h1.title")
-            ?.text()
-            ?.let(::apkComboVersionFromText)
-    }
-
-    private fun apkComboVersionFromText(text: String): String? =
-        Regex("""\b(\d+(?:[._-]\d+)+(?:[-.][A-Za-z0-9]+)?)\b""")
-            .find(text)
-            ?.value
-            ?.replace("_", ".")
-
-    private fun apkComboVersionCode(url: String): Long? {
-        val decoded = URLDecoder.decode(url, StandardCharsets.UTF_8.name())
-        Regex("""/(\d{1,12})[._-][A-Fa-f0-9]{8,}""")
-            .find(decoded)
-            ?.groupValues
-            ?.getOrNull(1)
-            ?.toLongOrNull()
-            ?.let { return it }
-
-        return decoded
-            .split("/")
-            .firstOrNull { it.all(Char::isDigit) && it.length >= 4 }
-            ?.toLongOrNull()
-    }
-
-    private fun findUptodown(request: HelperRequest, option: CandidateOption): List<DownloadCandidate> {
-        return uptodownDetailUrls(request)
-            .firstNotNullOfOrNull { detailUrl ->
-                runCatching {
-                    when (option) {
-                        CandidateOption.REQUESTED -> uptodownRequestedCandidatesFromDetailUrl(request, detailUrl)
-                        CandidateOption.LATEST -> uptodownCandidatesFromDetailUrl(request, detailUrl)
-                        CandidateOption.MANUAL -> emptyList()
-                    }
-                }
-                    .onFailure { Log.w(TAG, "Uptodown ${option.name.lowercase(Locale.US)} resolve failed", it) }
-                    .getOrNull()
-                    ?.takeIf(List<DownloadCandidate>::isNotEmpty)
-            }
-            .orEmpty()
-    }
-
-    private fun uptodownDetailUrls(request: HelperRequest): List<String> {
-        val defaultUrl = "https://${request.appName.slugForUrl()}.en.uptodown.com/android"
-        val hintedUrls = request.sourceHintUrlsFor(DownloadSource.UPTODOWN)
-            .mapNotNull { hint ->
-                val normalized = hint.substringBefore("?").substringBefore("#").trimEnd('/')
-                when {
-                    normalized.contains("/android/search", ignoreCase = true) -> null
-                    normalized.endsWith("/download", ignoreCase = true) -> normalized.removeSuffix("/download")
-                    normalized.contains("uptodown.com", ignoreCase = true) -> normalized
-                    else -> null
-                }
-            }
-        val searchResolvedUrls = runCatching {
-            resolveUptodownSearchUrls(uptodownSearchUrl(request.packageName))
-        }
-            .onFailure { Log.w(TAG, "Uptodown search resolve failed", it) }
-            .getOrDefault(emptyList())
-        val siteSearchUrls = if (searchResolvedUrls.isEmpty()) {
-            runCatching { resolveUptodownPackageSiteUrls(request.packageName) }
-                .onFailure { Log.w(TAG, "Uptodown package search resolve failed", it) }
-                .getOrDefault(emptyList())
-        } else {
-            emptyList()
-        }
-
-        return (hintedUrls + searchResolvedUrls + siteSearchUrls + defaultUrl).distinct()
-    }
-
-    private fun uptodownSearchUrl(packageName: String): String =
-        "https://en.uptodown.com/android/search?query=${URLEncoder.encode(packageName, "UTF-8")}"
-
-    private fun resolveUptodownSearchUrls(searchUrl: String): List<String> {
-        val doc = fetchDocument(searchUrl)
-        return doc.select("a[href]")
-            .asSequence()
-            .map { it.absUrl("href") }
-            .filter { url ->
-                url.matches(Regex("""https://[a-z0-9-]+\.en\.uptodown\.com/android/?"""))
-            }
-            .distinct()
-            .take(20)
-            .toList()
-    }
-
-    private fun resolveUptodownPackageSiteUrls(packageName: String): List<String> {
-        val query = URLEncoder.encode("site:uptodown.com/android/download \"$packageName\"", "UTF-8")
-        val doc = fetchDocument("https://www.bing.com/search?q=$query")
-        return Regex("""https://[a-z0-9-]+\.en\.uptodown\.com/android/download""")
-            .findAll(doc.html())
-            .map { it.value.removeSuffix("/download") }
-            .distinct()
-            .take(10)
-            .toList()
-    }
-
-    private fun uptodownCandidatesFromDetailUrl(
-        request: HelperRequest,
-        detailUrl: String
-    ): List<DownloadCandidate> {
-        val downloadPageUrl = "${detailUrl.trimEnd('/')}/download"
-        val doc = fetchDocument(downloadPageUrl)
-        val packageName = uptodownPackageName(doc)
-
-        if (packageName != request.packageName) return emptyList()
-
-        val versionsDoc = runCatching { fetchDocument("${detailUrl.trimEnd('/')}/versions", referer = downloadPageUrl) }
-            .getOrNull()
-        val versionName = versionsDoc?.selectFirst(".version")?.text()?.trim()?.takeIf(String::isNotBlank)
-            ?: doc.selectFirst(".detail .info .version")?.text()?.trim()?.takeIf(String::isNotBlank)
-            ?: Regex("""Information about .+? ([\w.-]+)""")
-                .find(doc.text())
-                ?.groupValues
-                ?.getOrNull(1)
-        val fileKind = parseInfoTableValue(doc, "File type")?.lowercase(Locale.US) ?: "apk"
-        val externalUrl = doc.selectFirst("#detail-download-button[data-url-ext]")?.attr("data-url-ext")
-            ?.normalizedHttpUrlOrNull()
-            ?: uptodownDownloadUrlFromPage(doc)
-        val normalizedDetailUrl = detailUrl.trimEnd('/')
-        val dataCode = versionsDoc?.let(::uptodownDataCode) ?: uptodownDataCode(doc)
-        dataCode
-            ?.let { code ->
-                uptodownSelectableVariants(
-                    request = request,
-                    detailUrl = normalizedDetailUrl,
-                    dataCode = code,
-                    pageDoc = doc,
-                    versionPageUrl = downloadPageUrl
-                )
-            }
-            .orEmpty()
-            .mapNotNull { variant ->
-                uptodownCandidateFromVersionVariant(
-                    request = request,
-                    detailUrl = normalizedDetailUrl,
-                    versionPageUrl = downloadPageUrl,
-                    versionName = versionName,
-                    option = CandidateOption.LATEST,
-                    variant = variant
-                )
-            }
-            .distinctBy(DownloadCandidate::identityKey)
-            .takeIf(List<DownloadCandidate>::isNotEmpty)
-            ?.let { return it }
-
-        return listOf(
-            DownloadCandidate(
-            source = DownloadSource.UPTODOWN,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = versionName,
-            versionCode = null,
-            url = externalUrl?.takeIf(String::isNotBlank) ?: downloadPageUrl,
-            fileKind = fileKind,
-            option = CandidateOption.LATEST,
-            directDownload = !externalUrl.isNullOrBlank(),
-            versionStatus = request.versionStatus(versionName, null),
-            formatMatches = request.acceptsFormat(fileKind),
-            files = externalUrl
-                ?.takeIf(String::isNotBlank)
-                ?.let {
-                    listOf(
-                        CandidateDownloadFile(
-                            url = it,
-                            fileName = "${request.packageName}-${versionName ?: "latest"}-uptodown.$fileKind"
-                                .sanitizeFileName(),
-                            referer = downloadPageUrl
-                        )
-                    )
-                }
-                .orEmpty()
-            )
-        )
-    }
-
-    private fun uptodownRequestedCandidatesFromDetailUrl(
-        request: HelperRequest,
-        detailUrl: String
-    ): List<DownloadCandidate> {
-        if (request.versionName == null && request.compatibleVersionNames.isEmpty()) return emptyList()
-
-        val normalizedDetailUrl = detailUrl.trimEnd('/')
-        val downloadPageUrl = "$normalizedDetailUrl/download"
-        val downloadDoc = fetchDocument(downloadPageUrl)
-        if (uptodownPackageName(downloadDoc) != request.packageName) return emptyList()
-
-        val versionsDoc = fetchDocument("$normalizedDetailUrl/versions", referer = downloadPageUrl)
-        val dataCode = uptodownDataCode(versionsDoc)
-            ?: uptodownDataCode(downloadDoc)
-            ?: return emptyList()
-        val entry = uptodownRequestedVersionEntry(
-            request = request,
-            detailUrl = normalizedDetailUrl,
-            dataCode = dataCode
-        ) ?: return emptyList()
-
-        return uptodownCandidatesFromVersionEntry(
-            request = request,
-            detailUrl = normalizedDetailUrl,
-            dataCode = dataCode,
-            entry = entry
-        )
-    }
-
-    private fun uptodownRequestedVersionEntry(
-        request: HelperRequest,
-        detailUrl: String,
-        dataCode: String
-    ): UptodownVersionEntry? {
-        for (page in 1..20) {
-            val entries = runCatching {
-                gson.fromJson(
-                    fetchText("$detailUrl/apps/$dataCode/versions/$page", referer = "$detailUrl/versions"),
-                    UptodownVersionResponse::class.java
-                ).data
-            }.getOrDefault(emptyList())
-
-            if (entries.isEmpty()) break
-
-            entries
-                .firstOrNull { entry ->
-                    val versionName = entry.version?.trim()?.takeIf(String::isNotBlank)
-                    versionName != null && request.matchesRequestedVersion(versionName, null)
-                }
-                ?.let { return it }
-        }
-
-        return null
-    }
-
-    private fun uptodownCandidatesFromVersionEntry(
-        request: HelperRequest,
-        detailUrl: String,
-        dataCode: String,
-        entry: UptodownVersionEntry
-    ): List<DownloadCandidate> {
-        val versionName = entry.version?.trim()?.takeIf(String::isNotBlank) ?: return emptyList()
-        val versionPageUrl = uptodownVersionPageUrl(entry) ?: return emptyList()
-        val pageDoc = fetchDocument(versionPageUrl, referer = "$detailUrl/versions")
-        val variants = uptodownSelectableVariants(
-            request = request,
-            detailUrl = detailUrl,
-            dataCode = dataCode,
-            pageDoc = pageDoc,
-            versionPageUrl = versionPageUrl
-        )
-
-        variants
-            .mapNotNull { variant ->
-                uptodownCandidateFromVersionVariant(
-                    request = request,
-                    detailUrl = detailUrl,
-                    versionPageUrl = versionPageUrl,
-                    versionName = versionName,
-                    option = CandidateOption.REQUESTED,
-                    variant = variant
-                )
-            }
-            .distinctBy(DownloadCandidate::identityKey)
-            .takeIf(List<DownloadCandidate>::isNotEmpty)
-            ?.let { return it }
-
-        val fileKind = (
-            entry.kindFile
-                ?: entry.titleKindFile
-                ?: parseInfoTableValue(pageDoc, "File type")
-                ?: "apk"
-            )
-            .lowercase(Locale.US)
-        val directUrl = uptodownDownloadUrlFromPage(pageDoc)
-
-        return listOf(
-            DownloadCandidate(
-            source = DownloadSource.UPTODOWN,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = versionName,
-            versionCode = null,
-            url = directUrl ?: versionPageUrl,
-            fileKind = fileKind,
-            option = CandidateOption.REQUESTED,
-            directDownload = directUrl != null,
-            versionStatus = request.versionStatus(versionName, null),
-            formatMatches = request.acceptsFormat(fileKind),
-            files = directUrl
-                ?.let {
-                    listOf(
-                        CandidateDownloadFile(
-                            url = it,
-                            fileName = "${request.packageName}-$versionName-uptodown.$fileKind"
-                                .sanitizeFileName(),
-                            referer = versionPageUrl
-                        )
-                    )
-                }
-                .orEmpty()
-            )
-        )
-    }
-
-    private fun uptodownCandidateFromVersionVariant(
-        request: HelperRequest,
-        detailUrl: String,
-        versionPageUrl: String,
-        versionName: String?,
-        option: CandidateOption,
-        variant: UptodownVariantFile
-    ): DownloadCandidate? {
-        val tokenDoc = fetchDocument("$detailUrl/download/${variant.fileId}-x", referer = versionPageUrl)
-        val fileKind = variant.fileKind.lowercase(Locale.US)
-        val directUrl = uptodownDownloadUrlFromPage(tokenDoc) ?: return null
-        val variantLabel = variant.displayLabel()
-        val variantFileSuffix = variantLabel.variantFileSuffix()
-
-        return DownloadCandidate(
-            source = DownloadSource.UPTODOWN,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = versionName,
-            versionCode = null,
-            url = directUrl,
-            fileKind = fileKind,
-            option = option,
-            directDownload = true,
-            versionStatus = request.versionStatus(versionName, null),
-            formatMatches = request.acceptsFormat(fileKind),
-            variantLabel = variantLabel,
-            files = listOf(
-                CandidateDownloadFile(
-                    url = directUrl,
-                    fileName = "${request.packageName}-${versionName ?: option.name.lowercase(Locale.US)}-uptodown$variantFileSuffix.$fileKind"
-                        .sanitizeFileName(),
-                    referer = versionPageUrl
-                )
-            )
-        )
-    }
-
-    private fun uptodownSelectableVariants(
-        request: HelperRequest,
-        detailUrl: String,
-        dataCode: String,
-        pageDoc: Document,
-        versionPageUrl: String
-    ): List<UptodownVariantFile> {
-        val dataVersion = pageDoc.selectFirst(".button.variants[data-version]")
-            ?.attr("data-version")
-            ?.takeIf(String::isNotBlank)
-            ?: return emptyList()
-        val appHostUrl = detailUrl.substringBeforeLast("/")
-        val content = runCatching {
-            gson.fromJson(
-                fetchText("$appHostUrl/app/$dataCode/version/$dataVersion/files", referer = versionPageUrl),
-                UptodownVariantResponse::class.java
-            ).content
-        }.getOrNull()
-            ?.takeIf(String::isNotBlank)
-            ?: return emptyList()
-        val variants = uptodownVariantFiles(Jsoup.parse(content, detailUrl))
-
-        return variants.filter { request.acceptsFormat(it.fileKind) }
-            .takeIf(List<UptodownVariantFile>::isNotEmpty)
-            ?: variants
-    }
-
-    private fun uptodownVariantFiles(doc: Document): List<UptodownVariantFile> {
-        val content = doc.selectFirst(".content") ?: return emptyList()
-        var archLabel: String? = null
-        return content.children().mapNotNull { child ->
-            if (!child.hasClass("variant")) {
-                archLabel = child.text().trim().takeIf(String::isNotBlank)
-                null
-            } else {
-                uptodownVariantFile(child, archLabel)
-            }
-        }
-    }
-
-    private fun uptodownVariantFile(element: Element, archLabel: String?): UptodownVariantFile? {
-        val fileId = element.selectFirst(".v-report[data-file-id]")
-            ?.attr("data-file-id")
-            ?.takeIf(String::isNotBlank)
-            ?: return null
-        val fileKind = element.selectFirst(".v-file span")
-            ?.text()
-            ?.lowercase(Locale.US)
-            ?.takeIf(String::isNotBlank)
-            ?: "apk"
-
-        return UptodownVariantFile(
-            fileId = fileId,
-            fileKind = fileKind,
-            archLabel = archLabel
-        )
-    }
-
-    private fun UptodownVariantFile.displayLabel(): String? =
-        archLabel?.archDisplayLabel()
-
-    private fun String.archDisplayLabel(): String =
-        if (isUniversalArchLabel()) {
-            "Universal"
-        } else {
-            trim()
-        }
-
-    private fun String.isUniversalArchLabel(): Boolean {
-        val normalizedLabel = lowercase(Locale.US)
-        return "all architectures" in normalizedLabel ||
-            "universal" in normalizedLabel ||
-            normalizedLabel == "all" ||
-            normalizedLabel == "noarch"
-    }
-
-    private fun uptodownPackageName(doc: Document): String? {
-        val playUrl = doc.selectFirst("#gplay-url[data-url]")
-            ?.attr("data-url")
-            ?.takeIf(String::isNotBlank)
-        val playPackage = playUrl
-            ?.let { runCatching { Uri.parse(it).getQueryParameter("id") }.getOrNull() }
-            ?.takeIf(String::isNotBlank)
-            ?: playUrl
-                ?.substringAfter("id=", "")
-                ?.substringBefore("&")
-                ?.takeIf(String::isNotBlank)
-
-        return playPackage ?: parseInfoTableValue(doc, "Package Name")
-    }
-
-    private fun uptodownDataCode(doc: Document): String? =
-        doc.selectFirst("#detail-app-name[data-code]")
-            ?.attr("data-code")
-            ?.takeIf(String::isNotBlank)
-
-    private fun uptodownVersionPageUrl(entry: UptodownVersionEntry): String? {
-        val versionUrl = entry.versionUrl ?: return null
-        val baseUrl = versionUrl.url?.trim()?.trimEnd('/')?.takeIf(String::isNotBlank) ?: return null
-        val extraUrl = versionUrl.extraUrl?.trim('/')?.takeIf(String::isNotBlank) ?: "download"
-        val versionId = versionUrl.versionId ?: entry.fileId ?: return null
-        return "$baseUrl/$extraUrl/$versionId"
-    }
-
-    private fun uptodownDownloadUrlFromPage(doc: Document): String? {
-        val dataUrl = doc.selectFirst("#detail-download-button[data-url]")
-            ?.attr("data-url")
-            ?.takeIf(String::isNotBlank)
-            ?: return null
-        val normalized = dataUrl.trim()
-        return if (normalized.startsWith("http", ignoreCase = true)) {
-            normalized.normalizedHttpUrlOrNull()
-        } else {
-            "https://dw.uptodown.com/dwn/${normalized.trimStart('/')}".normalizedHttpUrlOrNull()
-        }
-    }
-
-    private suspend fun findApkPure(request: HelperRequest, option: CandidateOption): List<DownloadCandidate> =
-        when (option) {
-            CandidateOption.REQUESTED -> listOfNotNull(apkPureRequestedCandidate(request))
-            CandidateOption.LATEST -> apkPureLatestCandidates(request)
-            CandidateOption.MANUAL -> emptyList()
-        }
-
-    private suspend fun apkPureLatestCandidates(request: HelperRequest): List<DownloadCandidate> {
-        val response = apkPureApi.getAppUpdate(
-            header = gson.toJson(ApkPureDeviceHeader()),
-            request = ApkPureUpdateRequest(
-                app_info_for_update = listOf(
-                    ApkPureAppInfo(package_name = request.packageName, version_code = 0L)
-                )
-            )
-        )
-
-        val apiLatestCandidates = response.app_update_response
-            .filter { it.package_name == request.packageName }
-            .mapNotNull { item ->
-                val url = item.asset.url.replace("http://", "https://").normalizedHttpUrlOrNull()
-                    ?: return@mapNotNull null
-                val fileKind = if (url.contains("/XAPK", ignoreCase = true)) "xapk" else "apk"
-
-                DownloadCandidate(
-                    source = DownloadSource.APK_PURE,
-                    name = item.label.ifBlank { request.appName },
-                    packageName = item.package_name,
-                    versionName = item.version_name,
-                    versionCode = item.version_code,
-                    url = url,
-                    fileKind = fileKind,
-                    option = CandidateOption.LATEST,
-                    directDownload = true,
-                    versionStatus = request.versionStatus(item.version_name, item.version_code),
-                    formatMatches = request.acceptsFormat(fileKind),
-                    files = listOf(
-                        CandidateDownloadFile(
-                            url = url,
-                            fileName = "${item.package_name}-${item.version_name}-apkpure.$fileKind"
-                                .sanitizeFileName()
-                        )
-                    )
-                )
-            }
-
-        val appPageUrl = runCatching { apkPureAppPageUrl(request) }
-            .onFailure { Log.w(TAG, "APKPure app page resolve failed", it) }
-            .getOrNull()
-        val webLatestCandidate = if (apiLatestCandidates.isEmpty()) {
-            appPageUrl?.let { url ->
-                runCatching {
-                    apkPureCandidateFromDownloadPage(
-                        request = request,
-                        appPageUrl = url,
-                        downloadPageUrl = "$url/downloading/",
-                        versionName = null,
-                        versionCode = null,
-                        option = CandidateOption.LATEST
-                    )
-                }
-                    .onFailure { Log.w(TAG, "APKPure latest web resolve failed", it) }
-                    .getOrNull()
-            }
-        } else {
-            null
-        }
-
-        return apiLatestCandidates + listOfNotNull(webLatestCandidate)
-    }
-
-    private fun apkPureRequestedCandidate(request: HelperRequest): DownloadCandidate? {
-        val appPageUrl = runCatching { apkPureAppPageUrl(request) }
-            .onFailure { Log.w(TAG, "APKPure app page resolve failed", it) }
-            .getOrNull()
-            ?: return null
-
-        return runCatching { apkPureRequestedCandidate(request, appPageUrl) }
-            .onFailure { Log.w(TAG, "APKPure requested version resolve failed", it) }
-            .getOrNull()
-    }
-
-    private fun apkPureInfoUrl(packageName: String): String =
-        "https://apkpure.com/apk-info/$packageName"
-
-    private fun apkPureAppPageUrl(request: HelperRequest): String? {
-        val doc = fetchDocument(apkPureInfoUrl(request.packageName))
-        return doc.selectFirst("link[rel=canonical]")
-            ?.absUrl("href")
-            ?.takeIf { url -> apkPureUrlMatchesPackage(url, request.packageName) }
-            ?.trimEnd('/')
-    }
-
-    private fun apkPureUrlMatchesPackage(url: String, packageName: String): Boolean =
-        runCatching {
-            java.net.URI(url).path.trim('/').split('/').lastOrNull() == packageName
-        }.getOrDefault(false)
-
-    private fun apkPureRequestedCandidate(request: HelperRequest, appPageUrl: String): DownloadCandidate? {
-        if (!request.hasRequestedVersionRequest) return null
-
-        val doc = fetchDocument(apkPureInfoUrl(request.packageName))
-        val item = doc.select(".version-item")
-            .firstOrNull { element ->
-                val versionName = element.attr("data-dt-version").takeIf(String::isNotBlank)
-                    ?: sourceVersionFromText(element.text())
-                val versionCode = element.attr("data-dt-version_code").toLongOrNull()
-                element.attr("data-dt-package_name").equals(request.packageName, ignoreCase = true) &&
-                    request.matchesRequestedVersion(versionName, versionCode)
-            }
-        if (item == null) {
-            return apkPureRequestedCandidateFromVersionsPage(request, appPageUrl)
-        }
-
-        val versionName = item.attr("data-dt-version").takeIf(String::isNotBlank)
-            ?.withoutTrailingVersionCode()
-            ?: request.requestedVersionName
-        val versionCode = item.attr("data-dt-version_code").toLongOrNull()
-            ?: item.attr("data-dt-versioncode").toLongOrNull()
-            ?: item.attr("data-dt-version").trailingVersionCode()
-        val versionPageUrl = item.selectFirst("a.go-version-btn[href], a.dt-version-name-link[href]")
-            ?.absUrl("href")
-            ?.normalizedHttpUrlOrNull()
-            ?: "$appPageUrl/download/${URLEncoder.encode(versionName.orEmpty(), "UTF-8")}"
-        val fileKind = fileKindFromTags(
-            tags = item.select(".tag").map { it.text() },
-            request = request
-        )
-
-        apkPureCandidateFromDownloadPage(
-            request = request,
-            appPageUrl = appPageUrl,
-            downloadPageUrl = apkPureDownloadingUrl(appPageUrl, versionName),
-            versionName = versionName,
-            versionCode = versionCode,
-            option = CandidateOption.REQUESTED
-        )?.let { return it }
-
-        return DownloadCandidate(
-            source = DownloadSource.APK_PURE,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = versionName,
-            versionCode = versionCode,
-            url = versionPageUrl,
-            fileKind = fileKind,
-            option = CandidateOption.REQUESTED,
-            directDownload = false,
-            versionStatus = request.versionStatus(versionName, versionCode),
-            formatMatches = request.acceptsFormat(fileKind)
-        )
-    }
-
-    private fun apkPureRequestedCandidateFromVersionsPage(
-        request: HelperRequest,
-        appPageUrl: String
-    ): DownloadCandidate? {
-        val versionsDoc = fetchDocument("$appPageUrl/versions", referer = appPageUrl)
-        val entry = apkPureVersionEntries(versionsDoc, request)
-            .firstOrNull { request.matchesRequestedVersion(it.versionName, it.versionCode) }
-            ?: return null
-
-        apkPureCandidateFromDownloadPage(
-            request = request,
-            appPageUrl = appPageUrl,
-            downloadPageUrl = entry.downloadPageUrl,
-            versionName = entry.versionName,
-            versionCode = entry.versionCode,
-            option = CandidateOption.REQUESTED
-        )?.let { return it }
-
-        return DownloadCandidate(
-            source = DownloadSource.APK_PURE,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = entry.versionName,
-            versionCode = entry.versionCode,
-            url = entry.downloadPageUrl,
-            fileKind = entry.fileKind,
-            option = CandidateOption.REQUESTED,
-            directDownload = false,
-            versionStatus = request.versionStatus(entry.versionName, entry.versionCode),
-            formatMatches = request.acceptsFormat(entry.fileKind)
-        )
-    }
-
-    private fun apkPureVersionEntries(doc: Document, request: HelperRequest): List<ApkPureVersionEntry> =
-        doc.select(".ver_download_link[data-dt-version]")
-            .mapNotNull { item ->
-                val rawVersion = item.attr("data-dt-version").takeIf(String::isNotBlank)
-                    ?: sourceVersionFromText(item.text())
-                val versionName = rawVersion
-                    ?.withoutTrailingVersionCode()
-                    ?.takeIf(String::isNotBlank)
-                val versionCode = item.attr("data-dt-versioncode").toLongOrNull()
-                    ?: item.attr("data-dt-version_code").toLongOrNull()
-                    ?: rawVersion?.trailingVersionCode()
-                val downloadPageUrl = item
-                    .selectFirst("a.dt-version-name-link[href], a[href*=/download/][href]")
-                    ?.absUrl("href")
-                    ?.normalizedHttpUrlOrNull()
-                    ?: return@mapNotNull null
-                val tags = buildList {
-                    addAll(item.select("[data-tag]").map { it.attr("data-tag") })
-                    addAll(item.select(".tag, .apk-type-tag-list *").map { it.text() })
-                    apkPureFileKindFromApkId(item.attr("data-dt-apkid"))?.let(::add)
-                }
-                val fileKind = fileKindFromTags(tags, request).takeUnless { it == "web" }
-                    ?: fileKindFromUrl(downloadPageUrl)
-
-                ApkPureVersionEntry(
-                    versionName = versionName,
-                    versionCode = versionCode,
-                    downloadPageUrl = downloadPageUrl,
-                    fileKind = fileKind
-                )
-            }
-
-    private fun apkPureFileKindFromApkId(apkId: String): String? =
-        apkId.substringAfter("b/", "")
-            .substringBefore("/")
-            .lowercase(Locale.US)
-            .takeIf { it in DOWNLOAD_FILE_KIND_SET }
-
-    private fun apkPureDownloadingUrl(appPageUrl: String, versionName: String?): String =
-        if (versionName.isNullOrBlank()) {
-            "$appPageUrl/downloading/"
-        } else {
-            "$appPageUrl/downloading/${Uri.encode(versionName)}"
-        }
-
-    private fun apkPureCandidateFromDownloadPage(
-        request: HelperRequest,
-        appPageUrl: String,
-        downloadPageUrl: String,
-        versionName: String?,
-        versionCode: Long?,
-        option: CandidateOption
-    ): DownloadCandidate? {
-        val doc = fetchDocument(downloadPageUrl, referer = appPageUrl)
-        if (!apkPureDownloadPageIsValid(doc)) return null
-
-        val downloadUrl = doc.selectFirst("a#download_link[href]")
-            ?.absUrl("href")
-            ?.replace("http://", "https://")
-            ?.normalizedHttpUrlOrNull()
-            ?: return null
-        val resolvedVersion = versionName
-            ?: Regex("""["']softwareVersion["']\s*:\s*["']([^"']+)["']""")
-                .find(doc.html())
-                ?.groupValues
-                ?.getOrNull(1)
-            ?: sourceVersionFromText(doc.select("h1, h2").joinToString(" ") { it.text() })
-        val fileKind = fileKindFromUrl(downloadUrl)
-
-        return DownloadCandidate(
-            source = DownloadSource.APK_PURE,
-            name = request.appName,
-            packageName = request.packageName,
-            versionName = resolvedVersion,
-            versionCode = versionCode,
-            url = downloadUrl,
-            fileKind = fileKind,
-            option = option,
-            directDownload = true,
-            versionStatus = request.versionStatus(resolvedVersion, versionCode),
-            formatMatches = request.acceptsFormat(fileKind),
-            files = listOf(
-                CandidateDownloadFile(
-                    url = downloadUrl,
-                    fileName = "${request.packageName}-${resolvedVersion ?: option.name.lowercase(Locale.US)}-apkpure.$fileKind"
-                        .sanitizeFileName(),
-                    referer = downloadPageUrl
-                )
-            )
-        )
-    }
-
-    private fun apkPureDownloadPageIsValid(doc: Document): Boolean {
-        if (doc.title().equals("Error", ignoreCase = true)) return false
-        if (doc.text().contains("Oopps! The page can't be found", ignoreCase = true)) return false
-        return true
-    }
-
-    private suspend fun aptoideLatestCandidate(request: HelperRequest): DownloadCandidate? {
-        val historyLatest = runCatching { aptoideLatestVersionHistoryCandidate(request) }.getOrNull()
-        val appPageUrl = resolveAptoideAppPageUrl(request) ?: return null
-        val webLatest = aptoideCandidateFromWebAppPage(request, appPageUrl, CandidateOption.LATEST)
-
-        val versionsUrl = appPageUrl.trimEnd('/').removeSuffix("/app") + "/versions"
-        val version = aptoideVersionsFromPage(versionsUrl, request.packageName).firstOrNull()
-        val versionsLatest = version?.let {
-            val app = aptoideApi.getAppById(it.id).nodes.meta.data
-                .takeIf { app -> app.packageName == request.packageName }
-                ?: return@let null
-            aptoideCandidateFromApp(request, app, CandidateOption.LATEST)
-        }
-
-        return listOfNotNull(historyLatest, webLatest, versionsLatest)
-            .maxWithOrNull { left, right -> compareVersionNames(left.versionName, right.versionName) }
-    }
-
-    private suspend fun aptoideLatestVersionHistoryCandidate(request: HelperRequest): DownloadCandidate? {
-        val app = aptoideApi.listAppVersionsByPackage(request.packageName).list
-            .filter { it.packageName == request.packageName }
-            .maxWithOrNull { left, right ->
-                compareVersionNames(left.file.vername, right.file.vername)
-            }
-            ?.let { version -> aptoideApi.getAppById(version.id).nodes.meta.data }
-            ?.takeIf { it.packageName == request.packageName }
-            ?: return null
-        return aptoideCandidateFromApp(request, app, CandidateOption.LATEST)
-    }
-
-    private suspend fun aptoideRequestedCandidate(request: HelperRequest): DownloadCandidate? {
-        val requestedTerm = request.versionName ?: request.versionCodeSummary ?: return null
-        val queries = listOf(
-            "${request.packageName} $requestedTerm",
-            "${request.appName} $requestedTerm",
-            request.packageName
-        ).distinct()
-
-        return queries.firstNotNullOfOrNull { query ->
-            val response = aptoideApi.searchApps(
-                AptoideSearchRequest(
-                    query = query,
-                    limit = "25"
-                )
-            )
-            response.datalist.list
-                .asSequence()
-                .filter { it.packageName == request.packageName }
-                .filter { app ->
-                    request.matchesRequestedVersion(app.file.vername, app.file.vercode.toLongOrNull())
-                }
-                .mapNotNull { app ->
-                    aptoideCandidateFromApp(
-                        request = request,
-                        app = app,
-                        option = CandidateOption.REQUESTED
-                    )
-                }
-                .firstOrNull()
-        } ?: aptoideVersionHistoryCandidate(request)
-    }
-
-    private suspend fun aptoideVersionHistoryCandidate(request: HelperRequest): DownloadCandidate? {
-        val appPageUrl = runCatching { resolveAptoideAppPageUrl(request) }.getOrNull()
-        val appId = appPageUrl?.let { url ->
-            runCatching { aptoideAppFromPage(url)?.id }.getOrNull()
-        }
-
-        val versions = buildList {
-            addAll(runCatching { aptoideApi.listAppVersionsByPackage(request.packageName).list }
-                .getOrDefault(emptyList()))
-            appId?.let { id ->
-                addAll(runCatching { aptoideApi.listAppVersionsById(id).list }
-                    .getOrDefault(emptyList()))
-            }
-        }
-
-        val requestedVersions = versions
-            .filter { it.packageName == request.packageName }
-            .filter { app -> request.matchesRequestedVersion(app.file.vername, app.file.vercode.toLongOrNull()) }
-            .distinctBy(AptoideApp::id)
-
-        for (version in requestedVersions) {
-            val app = runCatching { aptoideApi.getAppById(version.id).nodes.meta.data }
-                .getOrNull()
-                ?.takeIf { it.packageName == request.packageName }
-                ?.takeIf { request.matchesRequestedVersion(it.file.vername, it.file.vercode.toLongOrNull()) }
-                ?: continue
-
-            aptoideCandidateFromApp(
-                    request = request,
-                    app = app,
-                    option = CandidateOption.REQUESTED
-            )?.let { return it }
-        }
-
-        val requestedWebVersions = appPageUrl
-            ?.let { url ->
-                val versionsUrl = url.trimEnd('/').removeSuffix("/app") + "/versions"
-                runCatching { aptoideVersionsFromPage(versionsUrl, request.packageName) }
-                    .getOrDefault(emptyList())
-            }
-            .orEmpty()
-            .filter { version ->
-                request.matchesRequestedVersion(version.vername, version.vercode.takeIf { it > 0L })
-            }
-            .distinctBy(AptoideVersionItem::id)
-
-        for (version in requestedWebVersions) {
-            val app = runCatching { aptoideApi.getAppById(version.id).nodes.meta.data }
-                .getOrNull()
-                ?.takeIf { it.packageName == request.packageName }
-                ?.takeIf { request.matchesRequestedVersion(it.file.vername, it.file.vercode.toLongOrNull()) }
-                ?: continue
-
-            aptoideCandidateFromApp(
-                request = request,
-                app = app,
-                option = CandidateOption.REQUESTED
-            )?.let { return it }
-        }
-
-        return null
-    }
-
-    private suspend fun resolveAptoideAppPageUrl(request: HelperRequest): String? {
-        runCatching {
-            aptoideApi.getAppByPackage(request.packageName).nodes.meta.data
-                .takeIf { it.packageName == request.packageName }
-                ?.let(::aptoideAppPageUrl)
-        }.getOrNull()?.let { return it }
-
-        val response = aptoideApi.searchApps(AptoideSearchRequest(query = request.packageName))
-        return response.datalist.list
-            .firstOrNull { it.packageName == request.packageName }
-            ?.let(::aptoideAppPageUrl)
-    }
-
-    private fun aptoideAppPageUrl(app: AptoideApp): String? =
-        listOf(app.urls.w, app.urls.m)
-            .firstNotNullOfOrNull(String::normalizedHttpUrlOrNull)
-            ?.let { url ->
-                val uri = Uri.parse(url)
-                "${uri.scheme}://${uri.authority}/app"
-            }
-
-    private fun aptoideCandidateFromWebAppPage(
-        request: HelperRequest,
-        appPageUrl: String,
-        option: CandidateOption
-    ): DownloadCandidate? {
-        val app = aptoideAppFromPage(appPageUrl)
-            ?.takeIf { it.packageName == request.packageName }
-            ?: return null
-        return aptoideCandidateFromApp(request, app, option)
-    }
-
-    private fun aptoideAppFromPage(appPageUrl: String): AptoideApp? {
-        val json = fetchDocument(appPageUrl)
-            .selectFirst("script#__NEXT_DATA__")
-            ?.data()
-            ?.takeIf(String::isNotBlank)
-            ?: return null
-        return runCatching {
-            gson.fromJson(json, AptoideNextData::class.java).props.pageProps.app
-        }.getOrNull()
-    }
-
-    private fun aptoideVersionsFromPage(versionsUrl: String, packageName: String): List<AptoideVersionItem> {
-        val json = fetchDocument(versionsUrl)
-            .selectFirst("script#__NEXT_DATA__")
-            ?.data()
-            ?.takeIf(String::isNotBlank)
-            ?: return emptyList()
-        return runCatching {
-            val page = gson.fromJson(json, AptoideNextData::class.java).props.pageProps
-            if (page.packageName.isNotBlank() && page.packageName != packageName) {
-                emptyList()
-            } else {
-                page.versions
-            }
-        }.getOrDefault(emptyList())
-    }
-
-    private fun aptoideCandidateFromApp(
-        request: HelperRequest,
-        app: AptoideApp,
-        option: CandidateOption
-    ): DownloadCandidate? {
-        val url = listOf(app.file.path, app.file.pathAlt, app.urls.w, app.urls.m)
-            .firstNotNullOfOrNull(String::normalizedHttpUrlOrNull)
-            ?: return null
-        val directDownload = listOf(app.file.path, app.file.pathAlt)
-            .any { it.normalizedHttpUrlOrNull() == url }
-        val fileKind = "apk"
-        val versionCode = app.file.vercode.toLongOrNull()
-
-        return DownloadCandidate(
-            source = DownloadSource.APTOIDE,
-            name = app.name.ifBlank { request.appName },
-            packageName = app.packageName,
-            versionName = app.file.vername,
-            versionCode = versionCode,
-            url = url,
-            fileKind = fileKind,
-            option = option,
-            directDownload = directDownload,
-            versionStatus = request.versionStatus(app.file.vername, versionCode),
-            formatMatches = request.acceptsFormat(fileKind),
-            files = if (directDownload) {
-                listOf(
-                    CandidateDownloadFile(
-                        url = url,
-                        fileName = "${app.packageName}-${app.file.vername}-aptoide.apk"
-                            .sanitizeFileName()
-                    )
-                )
-            } else {
-                emptyList()
-            }
-        )
-    }
-
-    private fun aptoideSearchUrl(packageName: String): String =
-        "https://en.aptoide.com/search?query=${URLEncoder.encode(packageName, "UTF-8")}"
-
-    private fun fetchDocument(url: String, referer: String? = null): Document =
-        Jsoup.parse(fetchText(url, referer), url)
-
-    private fun fetchText(url: String, referer: String? = null): String {
-        val builder = Request.Builder().url(url)
-        referer?.let { builder.header("Referer", it) }
-        client.newCall(builder.build()).execute().use { response ->
-            check(response.isSuccessful) { "HTTP ${response.code}" }
-            return response.body.string()
-        }
-    }
 
     private fun downloadAndReturn(candidate: DownloadCandidate) {
         val activeRequest = request ?: return
@@ -2969,82 +906,7 @@ class MainActivity : ComponentActivity() {
             ?.takeIf(String::isNotBlank)
 
 
-    private fun cleanupTemporaryDownloads(settings: HelperSettings) {
-        if (!settings.deleteTemporaryAfterHandoff) return
-        val cutoff = System.currentTimeMillis() - TEMP_CLEANUP_MAX_AGE_MS
-        temporaryDownloadsDir()
-            .listFiles()
-            ?.filter { it.isFile && it.lastModified() < cutoff }
-            ?.forEach { file -> runCatching { file.delete() } }
-    }
-
 }
-
-internal data class HelperSettings(
-    val downloadLocation: DownloadLocation = DownloadLocation.TEMPORARY,
-    val networkPolicy: NetworkPolicy = NetworkPolicy.WIFI_AND_MOBILE,
-    val deleteTemporaryAfterHandoff: Boolean = true
-)
-
-internal enum class DownloadLocation(
-    val title: String,
-    val description: String
-) {
-    TEMPORARY(
-        title = "Hand off only",
-        description = "Keep the file in Helper's cache, send it to Morphe, then clean it up later."
-    ),
-    DOWNLOADS(
-        title = "Keep a copy",
-        description = "Save a visible copy in Downloads/APK Download Helper after the file checks out."
-    )
-}
-
-internal enum class NetworkPolicy(
-    val title: String,
-    val description: String
-) {
-    WIFI_ONLY(
-        title = "Wi-Fi only",
-        description = "Use Wi-Fi for source checks and downloads."
-    ),
-    MOBILE_DATA_ONLY(
-        title = "Mobile data only",
-        description = "Use cellular data and pause when Wi-Fi is active."
-    ),
-    WIFI_AND_MOBILE(
-        title = "Wi-Fi or mobile data",
-        description = "Use whichever connection Android is already using."
-    );
-
-    fun blockReason(context: Context): String? {
-        val connectivity = context.getSystemService(ConnectivityManager::class.java)
-            ?: return "Network status is unavailable. Change Helper settings or try Manual mode."
-        val activeNetwork = connectivity.activeNetwork
-            ?: return "No active network is available. Connect to an allowed network or use Manual mode."
-        val capabilities = connectivity.getNetworkCapabilities(activeNetwork)
-            ?: return "Network status is unavailable. Change Helper settings or try Manual mode."
-        if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
-            return "The active network has no internet access. Connect to another network or use Manual mode."
-        }
-
-        return when (this) {
-            WIFI_ONLY -> if (connectivity.isActiveNetworkMetered) {
-                "Helper is set to Wi-Fi only. Connect to Wi-Fi or change Helper settings."
-            } else {
-                null
-            }
-            MOBILE_DATA_ONLY -> if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-                "Helper is set to mobile data only. Switch to mobile data or change Helper settings."
-            } else {
-                null
-            }
-            WIFI_AND_MOBILE -> null
-        }
-    }
-}
-
-internal fun Context.temporaryDownloadsDir(): File = File(cacheDir, "downloads")
 
 private val historyTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.US)
 
@@ -3066,33 +928,6 @@ private fun Context.isHistoryUriUsable(uriString: String): Boolean {
         contentResolver.openInputStream(uri)?.use { } != null
     }.getOrDefault(false)
 }
-
-private fun Context.loadHelperSettings(): HelperSettings {
-    val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    return HelperSettings(
-        downloadLocation = enumValueOrDefault(
-            prefs.getString("download_location", null),
-            DownloadLocation.TEMPORARY
-        ),
-        networkPolicy = enumValueOrDefault(
-            prefs.getString("network_policy", null),
-            NetworkPolicy.WIFI_AND_MOBILE
-        ),
-        deleteTemporaryAfterHandoff = prefs.getBoolean("delete_temporary_after_handoff", true)
-    )
-}
-
-private fun Context.saveHelperSettings(settings: HelperSettings) {
-    getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .edit()
-        .putString("download_location", settings.downloadLocation.name)
-        .putString("network_policy", settings.networkPolicy.name)
-        .putBoolean("delete_temporary_after_handoff", settings.deleteTemporaryAfterHandoff)
-        .apply()
-}
-
-private inline fun <reified T : Enum<T>> enumValueOrDefault(name: String?, fallback: T): T =
-    name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: fallback
 
 internal fun File.mimeType(): String = when (extension.lowercase(Locale.US)) {
     "apk" -> "application/vnd.android.package-archive"
@@ -4962,12 +2797,12 @@ private fun CandidateResult.sourceHealth(): List<SourceHealthEntry> =
         }
     }
 
-private data class ApkMirrorLatestInfo(
+internal data class ApkMirrorLatestInfo(
     val versionName: String?,
     val openUrl: String
 )
 
-private data class ApkMirrorVariant(
+internal data class ApkMirrorVariant(
     val url: String,
     val type: String,
     val fileKind: String,
@@ -4976,11 +2811,11 @@ private data class ApkMirrorVariant(
     val isBundle: Boolean
 )
 
-private data class UptodownVersionResponse(
+internal data class UptodownVersionResponse(
     val data: List<UptodownVersionEntry> = emptyList()
 )
 
-private data class UptodownVersionEntry(
+internal data class UptodownVersionEntry(
     @SerializedName("fileID")
     val fileId: Long? = null,
     val version: String? = null,
@@ -4992,7 +2827,7 @@ private data class UptodownVersionEntry(
     val versionUrl: UptodownVersionUrl? = null
 )
 
-private data class UptodownVersionUrl(
+internal data class UptodownVersionUrl(
     val url: String? = null,
     @SerializedName("extraURL")
     val extraUrl: String? = null,
@@ -5000,11 +2835,11 @@ private data class UptodownVersionUrl(
     val versionId: Long? = null
 )
 
-private data class UptodownVariantResponse(
+internal data class UptodownVariantResponse(
     val content: String? = null
 )
 
-private data class UptodownVariantFile(
+internal data class UptodownVariantFile(
     val fileId: String,
     val fileKind: String,
     val archLabel: String?
@@ -5082,7 +2917,7 @@ private fun DownloadCandidate.matchSummary(request: HelperRequest): CandidateMat
     )
 }
 
-private fun DownloadCandidate.identityKey(): String =
+internal fun DownloadCandidate.identityKey(): String =
     "${source.name}:$versionName:$versionCode:$fileKind:$variantLabel:$url"
 
 internal data class CandidateDownloadFile(
@@ -5195,7 +3030,7 @@ internal object DownloadHelperContract {
     const val EXTRA_RESULT_FILE_NAME = "app.morphe.manager.extra.RESULT_FILE_NAME"
 }
 
-private interface ApkPureApi {
+internal interface ApkPureApi {
     @Headers(
         "content-type: application/json",
         "ual-access-businessid: projecta"
@@ -5207,14 +3042,14 @@ private interface ApkPureApi {
     ): ApkPureUpdateResponse
 }
 
-private data class ApkPureUpdateRequest(
+internal data class ApkPureUpdateRequest(
     val app_info_for_update: List<ApkPureAppInfo>,
     val android_id: String = Random.nextLong().toString(16),
     val application_id: String = "com.apkpure.aegon",
     val cached_size: Long = -1
 )
 
-private data class ApkPureAppInfo(
+internal data class ApkPureAppInfo(
     val package_name: String,
     val version_code: Long,
     val is_system: Boolean = false,
@@ -5222,12 +3057,12 @@ private data class ApkPureAppInfo(
     val cached_size: Int = -1
 )
 
-private data class ApkPureUpdateResponse(
+internal data class ApkPureUpdateResponse(
     val retcode: Int = 0,
     val app_update_response: List<ApkPureAppUpdate> = emptyList()
 )
 
-private data class ApkPureAppUpdate(
+internal data class ApkPureAppUpdate(
     val package_name: String = "",
     val version_code: Long = 0L,
     val version_name: String = "",
@@ -5235,23 +3070,23 @@ private data class ApkPureAppUpdate(
     val asset: ApkPureAsset = ApkPureAsset()
 )
 
-private data class ApkPureAsset(
+internal data class ApkPureAsset(
     val type: String = "",
     val url: String = ""
 )
 
-private data class ApkPureVersionEntry(
+internal data class ApkPureVersionEntry(
     val versionName: String?,
     val versionCode: Long?,
     val downloadPageUrl: String,
     val fileKind: String
 )
 
-private data class ApkPureDeviceHeader(
+internal data class ApkPureDeviceHeader(
     val device_info: ApkPureDeviceInfo = ApkPureDeviceInfo()
 )
 
-private data class ApkPureDeviceInfo(
+internal data class ApkPureDeviceInfo(
     val abis: List<String> = Build.SUPPORTED_ABIS.toList(),
     val android_id: String = Random.nextLong().toString(16),
     val os_ver: String = Build.VERSION.SDK_INT.toString(),
@@ -5259,7 +3094,7 @@ private data class ApkPureDeviceInfo(
     val platform: Int = 1
 )
 
-private interface AptoideApi {
+internal interface AptoideApi {
     @POST("listSearchApps")
     suspend fun searchApps(@Body request: AptoideSearchRequest): AptoideSearchResponse
 
@@ -5276,7 +3111,7 @@ private interface AptoideApi {
     suspend fun listAppVersionsById(@Query("app_id") appId: Long): AptoideVersionListResponse
 }
 
-private data class AptoideSearchRequest(
+internal data class AptoideSearchRequest(
     val query: String = "",
     val limit: String = "10",
     val q: String? = null,
@@ -5284,52 +3119,52 @@ private data class AptoideSearchRequest(
     val store_ids: List<Long>? = listOf(15L, 711454L)
 )
 
-private data class AptoideSearchResponse(
+internal data class AptoideSearchResponse(
     val datalist: AptoideDataList = AptoideDataList()
 )
 
-private data class AptoideDataList(
+internal data class AptoideDataList(
     val list: List<AptoideApp> = emptyList()
 )
 
-private data class AptoideGetAppResponse(
+internal data class AptoideGetAppResponse(
     val nodes: AptoideNodes = AptoideNodes()
 )
 
-private data class AptoideVersionListResponse(
+internal data class AptoideVersionListResponse(
     val list: List<AptoideApp> = emptyList()
 )
 
-private data class AptoideNodes(
+internal data class AptoideNodes(
     val meta: AptoideMetaNode = AptoideMetaNode()
 )
 
-private data class AptoideMetaNode(
+internal data class AptoideMetaNode(
     val data: AptoideApp = AptoideApp()
 )
 
-private data class AptoideNextData(
+internal data class AptoideNextData(
     val props: AptoideNextProps = AptoideNextProps()
 )
 
-private data class AptoideNextProps(
+internal data class AptoideNextProps(
     val pageProps: AptoidePageProps = AptoidePageProps()
 )
 
-private data class AptoidePageProps(
+internal data class AptoidePageProps(
     val app: AptoideApp = AptoideApp(),
     val packageName: String = "",
     val versions: List<AptoideVersionItem> = emptyList()
 )
 
-private data class AptoideVersionItem(
+internal data class AptoideVersionItem(
     val id: Long = 0L,
     val name: String = "",
     val vername: String = "",
     val vercode: Long = 0L
 )
 
-private data class AptoideApp(
+internal data class AptoideApp(
     val id: Long = 0L,
     val name: String = "",
     @SerializedName("package")
@@ -5338,7 +3173,7 @@ private data class AptoideApp(
     val urls: AptoideUrls = AptoideUrls()
 )
 
-private data class AptoideFile(
+internal data class AptoideFile(
     val vername: String = "",
     val vercode: String = "0",
     val path: String = "",
@@ -5346,15 +3181,15 @@ private data class AptoideFile(
     val pathAlt: String = ""
 )
 
-private data class AptoideUrls(
+internal data class AptoideUrls(
     val w: String = "",
     val m: String = ""
 )
 
-private fun playStoreUrl(packageName: String): String =
+internal fun playStoreUrl(packageName: String): String =
     "https://play.google.com/store/apps/details?id=${URLEncoder.encode(packageName, "UTF-8")}"
 
-private fun fileKindFromTags(tags: List<String>, request: HelperRequest): String {
+internal fun fileKindFromTags(tags: List<String>, request: HelperRequest): String {
     val available = tags
         .map { it.trim().lowercase(Locale.US) }
         .filter { it in DOWNLOAD_FILE_KIND_SET }
@@ -5474,7 +3309,7 @@ private fun Context.readApkMetadata(file: File): DownloadedApkMetadata? {
     )
 }
 
-private fun parseInfoTableValue(doc: Document, label: String): String? =
+internal fun parseInfoTableValue(doc: Document, label: String): String? =
     doc.select("tr")
         .firstOrNull { it.select("th").text().equals(label, ignoreCase = true) }
         ?.select("td")
@@ -5483,7 +3318,7 @@ private fun parseInfoTableValue(doc: Document, label: String): String? =
         ?.trim()
         ?.takeIf(String::isNotBlank)
 
-private fun fileKindFromUrl(url: String): String {
+internal fun fileKindFromUrl(url: String): String {
     val decoded = URLDecoder.decode(url, StandardCharsets.UTF_8.name()).lowercase(Locale.US)
     val fileNameKind = Regex("""filename[^.]*\.(apk|apks|apkm|xapk)""")
         .find(decoded)
@@ -5498,7 +3333,7 @@ private fun fileKindFromUrl(url: String): String {
     }
 }
 
-private fun String.slugForUrl(): String =
+internal fun String.slugForUrl(): String =
     lowercase(Locale.US)
         .replace("&", " and ")
         .replace("'", "")
@@ -5506,7 +3341,7 @@ private fun String.slugForUrl(): String =
         .trim('-')
         .ifBlank { "app" }
 
-private fun String.apkMirrorVersionSlug(): String =
+internal fun String.apkMirrorVersionSlug(): String =
     lowercase(Locale.US)
         .replace(".", "-")
         .replace("_", "-")
@@ -5526,18 +3361,18 @@ internal fun String?.versionNameEquals(other: String?): Boolean {
     return leftParts.isNotEmpty() && leftParts == rightParts
 }
 
-private fun String.withoutTrailingVersionCode(): String =
+internal fun String.withoutTrailingVersionCode(): String =
     replace(Regex("""\s*\(\s*\d+\s*\)\s*$"""), "")
         .trim()
 
-private fun String.trailingVersionCode(): Long? =
+internal fun String.trailingVersionCode(): Long? =
     Regex("""\(\s*(\d+)\s*\)\s*$""")
         .find(this)
         ?.groupValues
         ?.getOrNull(1)
         ?.toLongOrNull()
 
-private fun String.normalizedVersionName(): String =
+internal fun String.normalizedVersionName(): String =
     withoutTrailingVersionCode()
         .lowercase(Locale.US)
         .replace(Regex("""\b(version|ver|v|release|stable|apk|xapk|apkm|apks|bundle)\b"""), " ")
@@ -5551,7 +3386,7 @@ internal fun String.withManualModeHint(): String {
     return if (message.contains('\n')) "$message\n$hint" else "$message $hint"
 }
 
-private fun sourceFailureMessage(source: DownloadSource, error: Throwable): String =
+internal fun sourceFailureMessage(source: DownloadSource, error: Throwable): String =
     sourceFailureMessage(source.label, error, action = "check")
 
 internal fun downloadFailureMessage(candidate: DownloadCandidate, error: Throwable): String =
@@ -5600,13 +3435,13 @@ internal fun Throwable.failureDetails(): String =
         .firstOrNull()
         ?: javaClass.simpleName
 
-private fun sourceVersionFromText(text: String): String? =
+internal fun sourceVersionFromText(text: String): String? =
     Regex("""\b(v?\d+(?:[._-]\d+)+(?:[-.][A-Za-z0-9]+)?)\b""", RegexOption.IGNORE_CASE)
         .find(text)
         ?.value
         ?.trim()
 
-private fun compareVersionNames(left: String?, right: String?): Int {
+internal fun compareVersionNames(left: String?, right: String?): Int {
     if (left == right) return 0
     if (left == null) return -1
     if (right == null) return 1
@@ -5623,7 +3458,7 @@ private fun compareVersionNames(left: String?, right: String?): Int {
     return left.compareTo(right, ignoreCase = true)
 }
 
-private fun String.versionNumberParts(): List<Int> =
+internal fun String.versionNumberParts(): List<Int> =
     Regex("""\d+""")
         .findAll(this)
         .mapNotNull { it.value.toIntOrNull() }
@@ -5656,7 +3491,7 @@ private fun Collection<String>.orderedFileKinds(): List<String> {
     return knownKinds + extraKinds
 }
 
-private fun String?.variantFileSuffix(): String =
+internal fun String?.variantFileSuffix(): String =
     this
         ?.lowercase(Locale.US)
         ?.replace(Regex("""[^a-z0-9._-]+"""), "-")

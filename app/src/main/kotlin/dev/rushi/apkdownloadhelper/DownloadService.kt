@@ -20,10 +20,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
-import java.io.ByteArrayInputStream
 import java.io.File
-import java.io.FileOutputStream
-import java.io.SequenceInputStream
 import java.util.Locale
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -35,12 +32,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -54,9 +49,7 @@ private const val NOTIFICATION_ID_PROGRESS = 1001
 private const val NOTIFICATION_ID_DONE = 1002
 private const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
 private const val PREFS_PENDING = "pending_download_result"
-private const val MAX_DOWNLOAD_ATTEMPTS = 3
-private const val DOWNLOAD_RETRY_BASE_MS = 2_000L
-private const val HTTP_PARTIAL_CONTENT = 206
+
 
 internal data class PendingDownload(
     val request: HelperRequest,
@@ -149,7 +142,6 @@ internal object DownloadJobManager {
 internal class DownloadService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var downloadJob: Job? = null
-    private var activeCall: Call? = null
     private var lastPostedPercent = -1
 
     private val browserUserAgent =
@@ -179,6 +171,8 @@ internal class DownloadService : Service() {
             )
         }
         .build()
+
+    private val downloader = ApkDownloader(client, apkPureClient, onRetry = ::retryNotification)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -320,7 +314,7 @@ internal class DownloadService : Service() {
     }
 
     private fun cancelDownload() {
-        activeCall?.cancel()
+        downloader.cancelCurrent()
         downloadJob?.cancel()
     }
 
@@ -337,7 +331,7 @@ internal class DownloadService : Service() {
         val safeName = outputName.sanitizeFileName()
         val outputFile = File(downloadsDir, safeName)
         val stagedFile = File(downloadsDir, "$safeName.part")
-        downloadToFile(downloadFile, stagedFile) { copied, total ->
+        downloader.downloadToFile(downloadFile, stagedFile) { copied, total ->
             updateDownloadProgress(candidate, copied, total)
         }
         if (outputFile.exists()) outputFile.delete()
@@ -365,7 +359,7 @@ internal class DownloadService : Service() {
                 downloadsDir,
                 "${candidate.packageName}-${candidate.source.name}-split_$index.part".sanitizeFileName()
             )
-            downloadToFile(file, stagedFile) { fileCopied, total ->
+            downloader.downloadToFile(file, stagedFile) { fileCopied, total ->
                 knownTotal?.let { updateDownloadProgress(candidate, completed + fileCopied, it) }
             }
             completed += stagedFile.length()
@@ -381,81 +375,6 @@ internal class DownloadService : Service() {
             }
         }
         return outputFile
-    }
-
-    private suspend fun downloadToFile(
-        download: CandidateDownloadFile,
-        target: File,
-        onProgress: (copied: Long, total: Long) -> Unit
-    ) {
-        var attempt = 0
-        while (true) {
-            try {
-                performDownloadAttempt(download, target, onProgress)
-                return
-            } catch (error: Throwable) {
-                if (error is CancellationException || error.message == "Canceled") throw error
-                if (attempt >= MAX_DOWNLOAD_ATTEMPTS - 1 || !isTransientDownloadError(error)) throw error
-                attempt++
-                val delayMs = DOWNLOAD_RETRY_BASE_MS * (1L shl (attempt - 1))
-                retryNotification(attempt, delayMs)
-                delay(delayMs)
-            }
-        }
-    }
-
-    private fun performDownloadAttempt(
-        download: CandidateDownloadFile,
-        target: File,
-        onProgress: (copied: Long, total: Long) -> Unit
-    ) {
-        val url = download.url.normalizedHttpUrlOrNull()
-            ?: error("Source returned an invalid download URL.".withManualModeHint())
-        val partial = if (target.exists()) target.length() else 0L
-        val builder = Request.Builder().url(url)
-        download.referer?.let { builder.header("Referer", it) }
-        if (partial > 0L) builder.header("Range", "bytes=$partial-")
-
-        val call = downloadClientFor(url).newCall(builder.build())
-        activeCall = call
-        try {
-            call.execute().use { response ->
-                check(response.isSuccessful) { "HTTP ${response.code}" }
-                val resumed = response.code == HTTP_PARTIAL_CONTENT && partial > 0L
-                val total: Long = if (resumed) {
-                    partial + response.body.contentLength().coerceAtLeast(0L)
-                } else {
-                    download.size ?: response.body.contentLength().coerceAtLeast(0L)
-                }
-                val contentType = response.body.contentType()?.toString()
-                response.body.byteStream().use { input ->
-                    val source = if (resumed) {
-                        input
-                    } else {
-                        validateApkLikeStream(input, contentType)
-                    }
-                    FileOutputStream(target, resumed).use { output ->
-                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                        var copied = if (resumed) partial else 0L
-                        while (true) {
-                            val read = source.read(buffer)
-                            if (read < 0) break
-                            output.write(buffer, 0, read)
-                            copied += read
-                            onProgress(copied, total)
-                        }
-                    }
-                }
-            }
-        } finally {
-            if (activeCall === call) activeCall = null
-        }
-    }
-
-    private fun isTransientDownloadError(error: Throwable): Boolean {
-        if (error is java.io.IOException) return true
-        val message = error.message.orEmpty()
-        return Regex("""HTTP (408|429|5\d\d)\b""").containsMatchIn(message)
     }
 
     private fun retryNotification(attempt: Int, delayMs: Long) {
@@ -681,20 +600,4 @@ internal fun validateDownloadedArtifact(
     }
 }
 
-private fun validateApkLikeStream(
-    input: java.io.InputStream,
-    contentType: String?
-): java.io.InputStream {
-    val header = ByteArray(4)
-    val headerSize = input.read(header)
-    val isZip = headerSize >= 2 &&
-        header[0] == 'P'.code.toByte() &&
-        header[1] == 'K'.code.toByte()
 
-    check(isZip) {
-        val type = contentType?.let { " ($it)" }.orEmpty()
-        "Source did not return a valid APK/APKS/XAPK$type."
-    }
-
-    return SequenceInputStream(ByteArrayInputStream(header, 0, headerSize), input)
-}
