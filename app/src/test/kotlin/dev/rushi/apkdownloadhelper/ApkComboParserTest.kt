@@ -2,6 +2,7 @@ package dev.rushi.apkdownloadhelper
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -47,7 +48,9 @@ class ApkComboParserTest {
         assertTrue(candidate.url.contains("&key=abc"))
         assertEquals("arm64-v8a", candidate.variantLabel)
         assertEquals(1, candidate.files.size)
-        assertEquals(pageUrl, candidate.files[0].referer)
+        // No Referer: APKCombo's /d links redirect to download.pureapk.com, which
+        // bounces requests carrying an apkcombo.com Referer to an HTML page.
+        assertNull(candidate.files[0].referer)
     }
 
     @Test

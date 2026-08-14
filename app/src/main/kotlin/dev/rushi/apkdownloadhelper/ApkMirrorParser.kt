@@ -452,7 +452,6 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         val resolvedVersion = versionName
             ?: apkMirrorVersionFromReleaseUrl(releaseUrl)
         val fileKind = variant?.fileKind ?: if (isBundle) "apkm" else fileKindFromUrl(finalUrl)
-        if (!request.acceptsFormat(fileKind)) return null
         val variantLabel = variant?.displayLabel()
         val variantFileSuffix = variantLabel.variantFileSuffix()
 
@@ -523,9 +522,17 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         }
 
         val acceptedVariants = variants.filter { request.acceptsFormat(it.fileKind) }
-        return acceptedVariants.filter { apkMirrorDpiMatches(it.dpi) }
-            .takeIf(List<ApkMirrorVariant>::isNotEmpty)
-            ?: acceptedVariants
+        val dpiPreferred = acceptedVariants.filter { apkMirrorDpiMatches(it.dpi) }
+        val dpiAnyFormat = variants.filter { apkMirrorDpiMatches(it.dpi) }
+        return when {
+            dpiPreferred.isNotEmpty() -> dpiPreferred
+            acceptedVariants.isNotEmpty() -> acceptedVariants
+            dpiAnyFormat.isNotEmpty() -> dpiAnyFormat
+            // No variant matches the requested format (e.g. APKS requested but the
+            // release is only offered as an APKM bundle): offer the best variant
+            // anyway and let the UI flag the format mismatch, like other sources do.
+            else -> variants
+        }
     }
 
     private fun apkMirrorVariantFromRow(row: Element): ApkMirrorVariant? {
