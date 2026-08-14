@@ -2154,7 +2154,9 @@ private fun SourceSelector(
                 selected = index == selectedIndex,
                 onClick = { onSelect(index) },
                 height = 40.dp,
-                minWidth = 84.dp
+                minWidth = 56.dp,
+                textStyle = MaterialTheme.typography.labelMedium,
+                textHorizontalPadding = 8.dp
             )
         }
     }
