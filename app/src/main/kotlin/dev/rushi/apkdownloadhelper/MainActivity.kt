@@ -25,7 +25,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,13 +42,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -76,7 +70,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -94,6 +87,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -1795,18 +1789,12 @@ private fun SourceTabs(
     val groups = result.sourceGroups
 
     val pagerState = rememberPagerState(initialPage = 0) { groups.size }
-    val selectorState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-
-    LaunchedEffect(pagerState.currentPage) {
-        selectorState.animateScrollToItem(pagerState.currentPage)
-    }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SourceSelector(
             groups = groups,
             selectedIndex = pagerState.currentPage,
-            listState = selectorState,
             onSelect = { index ->
                 scope.launch { pagerState.animateScrollToPage(index) }
             }
@@ -1959,9 +1947,7 @@ private fun SubTabRow(
     onSelect: (SourceSubTab) -> Unit
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
     ) {
         tabs.forEach { tab ->
@@ -1969,8 +1955,11 @@ private fun SubTabRow(
                 text = tab.label,
                 selected = tab == selected,
                 onClick = { onSelect(tab) },
+                modifier = Modifier.weight(1f),
                 height = 36.dp,
-                minWidth = 0.dp
+                minWidth = 0.dp,
+                textStyle = MaterialTheme.typography.labelMedium,
+                textHorizontalPadding = 8.dp
             )
         }
     }
@@ -2152,19 +2141,20 @@ private fun CandidateResolveSection(
 private fun SourceSelector(
     groups: List<SourceCandidateGroup>,
     selectedIndex: Int,
-    listState: LazyListState,
     onSelect: (Int) -> Unit
 ) {
-    LazyRow(
-        state = listState,
+    FlowRow(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall),
+        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
     ) {
-        itemsIndexed(groups) { index, group ->
+        groups.forEachIndexed { index, group ->
             SourcePill(
                 text = group.source.label,
                 selected = index == selectedIndex,
-                onClick = { onSelect(index) }
+                onClick = { onSelect(index) },
+                height = 40.dp,
+                minWidth = 84.dp
             )
         }
     }
@@ -2177,7 +2167,9 @@ private fun SourcePill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     height: Dp = 44.dp,
-    minWidth: Dp = 92.dp
+    minWidth: Dp = 92.dp,
+    textStyle: TextStyle = MaterialTheme.typography.labelLarge,
+    textHorizontalPadding: Dp = HelperDefaults.ContentPadding
 ) {
     val shape = RoundedCornerShape(50)
     val colors = MaterialTheme.colorScheme
@@ -2198,11 +2190,11 @@ private fun SourcePill(
         Box(contentAlignment = Alignment.Center) {
             Text(
                 text = text,
-                style = MaterialTheme.typography.labelLarge,
+                style = textStyle,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = HelperDefaults.ContentPadding)
+                modifier = Modifier.padding(horizontal = textHorizontalPadding)
             )
         }
     }
