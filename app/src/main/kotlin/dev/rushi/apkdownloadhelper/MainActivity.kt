@@ -28,6 +28,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -2299,60 +2300,80 @@ private fun CandidateCard(
             context.isPackageInstalled(candidate.packageName)
         }
 
-    HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
+    // A plain manual web link carries no info beyond the action itself, so it
+    // renders as a bare outlined button to match the idle action buttons on the
+    // other tabs instead of a filled card around a single button.
+    val bareLink = candidate.option == CandidateOption.MANUAL &&
+        candidate.note == null &&
+        !hasResolvedCandidateInfo
+
+    val body: @Composable ColumnScope.() -> Unit = {
+        if (candidate.option != CandidateOption.MANUAL && hasResolvedCandidateInfo) {
+            CandidateInfoChips(request, candidate)
+        }
+        if (candidate.option != CandidateOption.MANUAL && hasResolvedCandidateInfo && !match.matches) {
+            CandidateMatchBox(match)
+        }
+        candidate.note?.let { note ->
+            InfoCard(note)
+        }
+
+        if (candidate.directDownload) {
+            HelperButton(
+                text = "Download and return",
+                onClick = onDownload,
+                icon = Icons.Outlined.Download,
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            HelperOutlinedButton(
+                text = "Open link",
+                onClick = {
+                    if (candidate.source == DownloadSource.PLAY) {
+                        context.openPlayStoreListing(candidate.packageName, candidate.url)
+                    } else {
+                        uriHandler.openUri(candidate.url)
+                    }
+                    hasOpenedLink = true
+                },
+                icon = Icons.Outlined.OpenInBrowser,
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (candidate.source.supportsManualArtifactPicker && hasOpenedLink) {
+                HelperButton(
+                    text = "Select downloaded file",
+                    onClick = onPickDownloadedFile,
+                    icon = Icons.Outlined.FolderOpen,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (showUseInstalledApp) {
+                HelperButton(
+                    text = "Use installed app",
+                    onClick = onUseInstalledApp,
+                    icon = Icons.Outlined.CheckCircle,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+
+    if (bareLink) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(HelperDefaults.ContentPadding),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
         ) {
-            if (candidate.option != CandidateOption.MANUAL && hasResolvedCandidateInfo) {
-                CandidateInfoChips(request, candidate)
-            }
-            if (candidate.option != CandidateOption.MANUAL && hasResolvedCandidateInfo && !match.matches) {
-                CandidateMatchBox(match)
-            }
-            candidate.note?.let { note ->
-                InfoCard(note)
-            }
-
-            if (candidate.directDownload) {
-                HelperButton(
-                    text = "Download and return",
-                    onClick = onDownload,
-                    icon = Icons.Outlined.Download,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                HelperOutlinedButton(
-                    text = "Open link",
-                    onClick = {
-                        if (candidate.source == DownloadSource.PLAY) {
-                            context.openPlayStoreListing(candidate.packageName, candidate.url)
-                        } else {
-                            uriHandler.openUri(candidate.url)
-                        }
-                        hasOpenedLink = true
-                    },
-                    icon = Icons.Outlined.OpenInBrowser,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (candidate.source.supportsManualArtifactPicker && hasOpenedLink) {
-                    HelperButton(
-                        text = "Select downloaded file",
-                        onClick = onPickDownloadedFile,
-                        icon = Icons.Outlined.FolderOpen,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-                if (showUseInstalledApp) {
-                    HelperButton(
-                        text = "Use installed app",
-                        onClick = onUseInstalledApp,
-                        icon = Icons.Outlined.CheckCircle,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+            body()
+        }
+    } else {
+        HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(HelperDefaults.ContentPadding),
+                verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+            ) {
+                body()
             }
         }
     }
