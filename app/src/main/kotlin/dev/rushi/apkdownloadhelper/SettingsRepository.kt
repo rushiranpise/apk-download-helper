@@ -114,6 +114,22 @@ private inline fun <reified T : Enum<T>> enumValueOrDefault(name: String?, fallb
 
 internal fun Context.temporaryDownloadsDir(): File = File(cacheDir, "downloads")
 
+internal fun Context.temporaryDownloadsSize(): Long =
+    temporaryDownloadsDir()
+        .listFiles()
+        ?.filter { it.isFile }
+        ?.sumOf { it.length() }
+        ?: 0L
+
+/** Deletes every temporary hand-off file and returns the freed bytes. */
+internal fun Context.clearTemporaryDownloads(): Long {
+    val dir = temporaryDownloadsDir()
+    val files = dir.listFiles()?.filter { it.isFile }.orEmpty()
+    val freed = files.sumOf { it.length() }
+    files.forEach { file -> runCatching { file.delete() } }
+    return freed
+}
+
 internal fun Context.cleanupTemporaryDownloads(settings: HelperSettings) {
     if (!settings.deleteTemporaryAfterHandoff) return
     val cutoff = System.currentTimeMillis() - TEMP_CLEANUP_MAX_AGE_MS

@@ -1628,6 +1628,9 @@ private fun HelperSettingsCard(
     settings: HelperSettings,
     onSettingsChange: (HelperSettings) -> Unit
 ) {
+    val context = LocalContext.current
+    var cacheBytes by remember(context) { mutableStateOf(context.temporaryDownloadsSize()) }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
@@ -1643,8 +1646,15 @@ private fun HelperSettingsCard(
                     }
                 )
             }
+            SettingsClearRow(
+                sizeBytes = cacheBytes,
+                onClear = {
+                    context.clearTemporaryDownloads()
+                    cacheBytes = 0L
+                }
+            )
             SettingSwitchRow(
-                title = "Clear storage, cache & downloads",
+                title = "Auto-clear after hand-off",
                 description = "Remove temporary APKs after handing off to Morphe, and clear old cache files on launch.",
                 checked = settings.deleteTemporaryAfterHandoff,
                 onCheckedChange = {
@@ -1775,6 +1785,61 @@ private fun SettingsChoiceRow(
             }
         }
     }
+}
+
+@Composable
+private fun SettingsClearRow(
+    sizeBytes: Long,
+    onClear: () -> Unit
+) {
+    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text("Clear storage, cache & downloads", fontWeight = FontWeight.Bold)
+                Text(
+                    text = if (sizeBytes > 0L) {
+                        "${sizeBytes.formatBytes()} in cache — tap Clear to remove it now."
+                    } else {
+                        "Cache is empty — nothing to clear."
+                    },
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+            HelperOutlinedButton(
+                text = "Clear",
+                onClick = onClear,
+                modifier = Modifier.widthIn(min = 96.dp)
+            )
+        }
+    }
+}
+
+private fun Long.formatBytes(): String {
+    if (this <= 0L) return "0 B"
+    val units = listOf("B", "KB", "MB", "GB")
+    var value = toDouble()
+    var unit = 0
+    while (value >= 1024.0 && unit < units.lastIndex) {
+        value /= 1024.0
+        unit++
+    }
+    return if (unit == 0) "${toLong()} B" else String.format(Locale.US, "%.1f %s", value, units[unit])
 }
 
 @Composable
