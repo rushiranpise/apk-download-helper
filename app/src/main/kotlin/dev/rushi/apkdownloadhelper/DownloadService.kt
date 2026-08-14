@@ -289,6 +289,7 @@ internal class DownloadService : Service() {
             callerPackage = request.callerPackage
         )
         DownloadJobManager.persistPendingResult(result, applicationContext)
+        recordHandOff(request, candidate, file, uri)
 
         if (
             settings.downloadLocation == DownloadLocation.DOWNLOADS ||

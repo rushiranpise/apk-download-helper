@@ -51,10 +51,12 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.OpenInBrowser
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -200,6 +202,7 @@ class MainActivity : ComponentActivity() {
     private var installedPackageRefreshToken by mutableIntStateOf(0)
     private val requestLogs = mutableStateListOf<RequestLogEntry>()
     private val logTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+    private val historyTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.US)
     private var pendingDownload: PendingDownload? = null
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -234,6 +237,9 @@ class MainActivity : ComponentActivity() {
                     onUseInstalledApp = ::returnInstalledApp,
                     onVersionHistory = ::loadVersionHistory,
                     onDownloadVersion = ::downloadVersion,
+                    onOpenHistoryEntry = ::openHistoryEntry,
+                    onShareHistoryEntry = ::shareHistoryEntry,
+                    onClearHistory = { DownloadHistoryStore.clear(applicationContext) },
                     onClearLogs = { requestLogs.clear() },
                     onCancel = {
                         setResult(Activity.RESULT_CANCELED)
@@ -2804,6 +2810,34 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
+    private fun shareHistoryEntry(entry: DownloadHistoryEntry) {
+        val uri = Uri.parse(entry.uri)
+        val share = Intent(Intent.ACTION_SEND).apply {
+            type = fileNameMimeType(entry.fileName)
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = ClipData.newUri(contentResolver, entry.fileName, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            startActivity(Intent.createChooser(share, "Share ${entry.fileName}"))
+        }.onFailure {
+            appendLog("Could not share ${entry.fileName}.", LogLevel.Warning)
+        }
+    }
+
+    private fun openHistoryEntry(entry: DownloadHistoryEntry) {
+        val uri = Uri.parse(entry.uri)
+        val open = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, fileNameMimeType(entry.fileName))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        runCatching {
+            startActivity(open)
+        }.onFailure {
+            appendLog("Could not open ${entry.fileName}.", LogLevel.Warning)
+        }
+    }
+
     private fun returnPreparedFile(
         request: HelperRequest,
         candidate: DownloadCandidate,
@@ -2824,6 +2858,7 @@ class MainActivity : ComponentActivity() {
             callerPackage = request.callerPackage
         )
         DownloadJobManager.persistPendingResult(pending, applicationContext)
+        recordHandOff(request, candidate, file, uri)
         if (
             settings.downloadLocation == DownloadLocation.DOWNLOADS ||
             settings.deleteTemporaryAfterHandoff
@@ -3010,6 +3045,27 @@ internal enum class NetworkPolicy(
 }
 
 internal fun Context.temporaryDownloadsDir(): File = File(cacheDir, "downloads")
+
+private val historyTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.US)
+
+private fun formatHistoryTimestamp(timestamp: Long): String =
+    synchronized(historyTimeFormat) { historyTimeFormat.format(Date(timestamp)) }
+
+private fun fileNameMimeType(fileName: String): String =
+    when (fileName.substringAfterLast('.', "").lowercase(Locale.US)) {
+        "apk" -> "application/vnd.android.package-archive"
+        "apks",
+        "apkm",
+        "xapk" -> "application/zip"
+        else -> "application/octet-stream"
+    }
+
+private fun Context.isHistoryUriUsable(uriString: String): Boolean {
+    val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return false
+    return runCatching {
+        contentResolver.openInputStream(uri)?.use { } != null
+    }.getOrDefault(false)
+}
 
 private fun Context.loadHelperSettings(): HelperSettings {
     val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -3203,12 +3259,21 @@ private fun HelperScreen(
     onUseInstalledApp: (DownloadCandidate) -> Unit,
     onVersionHistory: (DownloadSource) -> Unit,
     onDownloadVersion: (DownloadCandidate) -> Unit,
+    onOpenHistoryEntry: (DownloadHistoryEntry) -> Unit,
+    onShareHistoryEntry: (DownloadHistoryEntry) -> Unit,
+    onClearHistory: () -> Unit,
     onClearLogs: () -> Unit,
     onCancel: () -> Unit
 ) {
     var showLogs by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showHistory by remember { mutableStateOf(false) }
     var pendingFilePick by remember { mutableStateOf<DownloadCandidate?>(null) }
+    val context = LocalContext.current
+    var historyEntries by remember { mutableStateOf<List<DownloadHistoryEntry>>(emptyList()) }
+    val refreshHistory = {
+        historyEntries = DownloadHistoryStore.entries(context)
+    }
     val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         val candidate = pendingFilePick
         pendingFilePick = null
@@ -3218,14 +3283,32 @@ private fun HelperScreen(
         pendingFilePick = candidate
         filePickerLauncher.launch(APK_PICKER_MIME_TYPES)
     }
-    BackHandler(enabled = showSettings) {
-        showSettings = false
+    BackHandler(enabled = showSettings || showHistory) {
+        if (showHistory) {
+            showHistory = false
+        } else {
+            showSettings = false
+        }
     }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
+        if (showHistory) {
+            HelperHistoryScreen(
+                entries = historyEntries,
+                onBack = { showHistory = false },
+                onOpen = onOpenHistoryEntry,
+                onShare = onShareHistoryEntry,
+                onClear = {
+                    onClearHistory()
+                    refreshHistory()
+                }
+            )
+            return@Surface
+        }
+
         if (showSettings) {
             HelperSettingsScreen(
                 settings = settings,
@@ -3257,10 +3340,19 @@ private fun HelperScreen(
                         modifier = Modifier.weight(1f)
                     )
                     HelperOutlinedButton(
+                        text = "History",
+                        onClick = {
+                            refreshHistory()
+                            showHistory = true
+                        },
+                        icon = Icons.Outlined.History,
+                        modifier = Modifier.widthIn(min = 110.dp)
+                    )
+                    HelperOutlinedButton(
                         text = "Settings",
                         onClick = { showSettings = true },
                         icon = Icons.Outlined.Settings,
-                        modifier = Modifier.widthIn(min = 132.dp)
+                        modifier = Modifier.widthIn(min = 120.dp)
                     )
                 }
             }
@@ -3437,6 +3529,166 @@ private fun SourceHealthRow(entry: SourceHealthEntry) {
                 maxLines = if (entry.status == SourceHealthStatus.Failed) 3 else 1,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+    }
+}
+
+@Composable
+private fun HelperHistoryScreen(
+    entries: List<DownloadHistoryEntry>,
+    onBack: () -> Unit,
+    onOpen: (DownloadHistoryEntry) -> Unit,
+    onShare: (DownloadHistoryEntry) -> Unit,
+    onClear: () -> Unit
+) {
+    val context = LocalContext.current
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(horizontal = HelperDefaults.ContentPadding, vertical = HelperDefaults.ContentPadding),
+        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                HelperOutlinedButton(
+                    text = "Back",
+                    onClick = onBack,
+                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                    modifier = Modifier.widthIn(min = 112.dp)
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = "Download history",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
+                    )
+                    Text(
+                        text = "Files you handed off to Morphe",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                HelperOutlinedButton(
+                    text = "Clear",
+                    onClick = onClear
+                )
+            }
+        }
+
+        if (entries.isEmpty()) {
+            item {
+                InfoCard("No hand-offs recorded yet. Downloads and picked files you return to Morphe show up here.")
+            }
+        } else {
+            entries.forEach { entry ->
+                item {
+                    val usable = remember(entry.uri) { context.isHistoryUriUsable(entry.uri) }
+                    HistoryEntryCard(
+                        entry = entry,
+                        usable = usable,
+                        onOpen = { onOpen(entry) },
+                        onShare = { onShare(entry) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryEntryCard(
+    entry: DownloadHistoryEntry,
+    usable: Boolean,
+    onOpen: () -> Unit,
+    onShare: () -> Unit
+) {
+    HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = entry.appName,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = entry.packageName,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Text(
+                    text = formatHistoryTimestamp(entry.timestamp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            Text(
+                text = buildString {
+                    entry.versionName?.let { append(it).append(" · ") }
+                    append(entry.sourceName)
+                    append(" · ")
+                    append(entry.fileName)
+                    if (!entry.fileKind.equals("web", ignoreCase = true)) {
+                        append(" · ")
+                        append(entry.fileKind.uppercase(Locale.US))
+                    }
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (usable) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+                ) {
+                    HelperButton(
+                        text = "Share",
+                        onClick = onShare,
+                        icon = Icons.Outlined.Share,
+                        modifier = Modifier.weight(1f)
+                    )
+                    HelperOutlinedButton(
+                        text = "Open",
+                        onClick = onOpen,
+                        icon = Icons.Outlined.FolderOpen,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else {
+                Text(
+                    text = "File no longer available (temporary hand-off files are cleaned up after Morphe copies them).",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
     }
 }
