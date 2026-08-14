@@ -1100,9 +1100,7 @@ private fun HelperScreen(
     onClearLogs: () -> Unit,
     onCancel: () -> Unit
 ) {
-    var showLogs by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
-    var showHistory by remember { mutableStateOf(false) }
     var pendingFilePick by remember { mutableStateOf<DownloadCandidate?>(null) }
     val context = LocalContext.current
     var historyEntries by remember { mutableStateOf<List<DownloadHistoryEntry>>(emptyList()) }
@@ -1118,36 +1116,28 @@ private fun HelperScreen(
         pendingFilePick = candidate
         filePickerLauncher.launch(APK_PICKER_MIME_TYPES)
     }
-    BackHandler(enabled = showSettings || showHistory) {
-        if (showHistory) {
-            showHistory = false
-        } else {
-            showSettings = false
-        }
+    BackHandler(enabled = showSettings) {
+        showSettings = false
     }
 
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background
     ) {
-        if (showHistory) {
-            HelperHistoryScreen(
-                entries = historyEntries,
-                onBack = { showHistory = false },
-                onOpen = onOpenHistoryEntry,
-                onShare = onShareHistoryEntry,
-                onClear = {
-                    onClearHistory()
-                    refreshHistory()
-                }
-            )
-            return@Surface
-        }
-
         if (showSettings) {
             HelperSettingsScreen(
                 settings = settings,
                 onSettingsChange = onSettingsChange,
+                logs = logs,
+                onClearLogs = onClearLogs,
+                healthEntries = (state as? UiState.Ready)?.result?.sourceHealth().orEmpty(),
+                historyEntries = historyEntries,
+                onOpenHistoryEntry = onOpenHistoryEntry,
+                onShareHistoryEntry = onShareHistoryEntry,
+                onClearHistory = {
+                    onClearHistory()
+                    refreshHistory()
+                },
                 onBack = { showSettings = false }
             )
             return@Surface
@@ -1175,17 +1165,11 @@ private fun HelperScreen(
                         modifier = Modifier.weight(1f)
                     )
                     HelperOutlinedButton(
-                        text = "History",
+                        text = "Settings",
                         onClick = {
                             refreshHistory()
-                            showHistory = true
+                            showSettings = true
                         },
-                        icon = Icons.Outlined.History,
-                        modifier = Modifier.widthIn(min = 110.dp)
-                    )
-                    HelperOutlinedButton(
-                        text = "Settings",
-                        onClick = { showSettings = true },
                         icon = Icons.Outlined.Settings,
                         modifier = Modifier.widthIn(min = 120.dp)
                     )
@@ -1206,11 +1190,6 @@ private fun HelperScreen(
                     horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
                 ) {
                     HelperOutlinedButton(
-                        text = if (showLogs) "Hide logs" else "Logs",
-                        onClick = { showLogs = !showLogs },
-                        modifier = Modifier.weight(1f)
-                    )
-                    HelperOutlinedButton(
                         text = "Refresh",
                         onClick = onRefresh,
                         icon = Icons.Outlined.Refresh,
@@ -1221,20 +1200,6 @@ private fun HelperScreen(
                         onClick = onCancel,
                         modifier = Modifier.weight(1f)
                     )
-                }
-            }
-            if (showLogs) {
-                item {
-                    RequestLogsCard(
-                        logs = logs,
-                        onClearLogs = onClearLogs
-                    )
-                }
-            }
-
-            if (state is UiState.Ready) {
-                item {
-                    SourceHealthCard(state.result.sourceHealth())
                 }
             }
 
@@ -1369,78 +1334,6 @@ private fun SourceHealthRow(entry: SourceHealthEntry) {
 }
 
 @Composable
-private fun HelperHistoryScreen(
-    entries: List<DownloadHistoryEntry>,
-    onBack: () -> Unit,
-    onOpen: (DownloadHistoryEntry) -> Unit,
-    onShare: (DownloadHistoryEntry) -> Unit,
-    onClear: () -> Unit
-) {
-    val context = LocalContext.current
-    LazyColumn(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = HelperDefaults.ContentPadding, vertical = HelperDefaults.ContentPadding),
-        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
-    ) {
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                HelperOutlinedButton(
-                    text = "Back",
-                    onClick = onBack,
-                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                    modifier = Modifier.widthIn(min = 112.dp)
-                )
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Text(
-                        text = "Download history",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Text(
-                        text = "Files you handed off to Morphe",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                HelperOutlinedButton(
-                    text = "Clear",
-                    onClick = onClear
-                )
-            }
-        }
-
-        if (entries.isEmpty()) {
-            item {
-                InfoCard("No hand-offs recorded yet. Downloads and picked files you return to Morphe show up here.")
-            }
-        } else {
-            entries.forEach { entry ->
-                item {
-                    val usable = remember(entry.uri) { context.isHistoryUriUsable(entry.uri) }
-                    HistoryEntryCard(
-                        entry = entry,
-                        usable = usable,
-                        onOpen = { onOpen(entry) },
-                        onShare = { onShare(entry) }
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun HistoryEntryCard(
     entry: DownloadHistoryEntry,
     usable: Boolean,
@@ -1532,8 +1425,16 @@ private fun HistoryEntryCard(
 private fun HelperSettingsScreen(
     settings: HelperSettings,
     onSettingsChange: (HelperSettings) -> Unit,
+    logs: List<RequestLogEntry>,
+    onClearLogs: () -> Unit,
+    healthEntries: List<SourceHealthEntry>,
+    historyEntries: List<DownloadHistoryEntry>,
+    onOpenHistoryEntry: (DownloadHistoryEntry) -> Unit,
+    onShareHistoryEntry: (DownloadHistoryEntry) -> Unit,
+    onClearHistory: () -> Unit,
     onBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
     LazyColumn(
         modifier = Modifier
@@ -1591,6 +1492,69 @@ private fun HelperSettingsScreen(
             HelperSettingsCard(
                 settings = settings,
                 onSettingsChange = onSettingsChange
+            )
+        }
+
+        item {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+            ) {
+                Text(
+                    text = "Source health",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                if (healthEntries.isEmpty()) {
+                    InfoCard("No sources checked yet. Resolve candidates on the main screen to see per-source health here.")
+                } else {
+                    SourceHealthCard(healthEntries)
+                }
+            }
+        }
+
+        item {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Download history",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    HelperOutlinedButton(
+                        text = "Clear",
+                        onClick = onClearHistory,
+                        modifier = Modifier.widthIn(min = 96.dp)
+                    )
+                }
+                if (historyEntries.isEmpty()) {
+                    InfoCard("No hand-offs recorded yet. Downloads and picked files you return to Morphe show up here.")
+                } else {
+                    historyEntries.forEach { entry ->
+                        val usable = remember(entry.uri) { context.isHistoryUriUsable(entry.uri) }
+                        HistoryEntryCard(
+                            entry = entry,
+                            usable = usable,
+                            onOpen = { onOpenHistoryEntry(entry) },
+                            onShare = { onShareHistoryEntry(entry) }
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            RequestLogsCard(
+                logs = logs,
+                onClearLogs = onClearLogs
             )
         }
     }
