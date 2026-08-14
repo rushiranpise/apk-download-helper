@@ -3087,10 +3087,10 @@ internal data class ApkPureDeviceHeader(
 )
 
 internal data class ApkPureDeviceInfo(
-    val abis: List<String> = Build.SUPPORTED_ABIS.toList(),
+    val abis: List<String> = runCatching { Build.SUPPORTED_ABIS.toList() }.getOrDefault(emptyList()),
     val android_id: String = Random.nextLong().toString(16),
-    val os_ver: String = Build.VERSION.SDK_INT.toString(),
-    val os_ver_name: String = Build.VERSION.RELEASE,
+    val os_ver: String = runCatching { Build.VERSION.SDK_INT.toString() }.getOrDefault(""),
+    val os_ver_name: String = runCatching { Build.VERSION.RELEASE }.getOrNull() ?: "",
     val platform: Int = 1
 )
 

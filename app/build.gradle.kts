@@ -85,6 +85,10 @@ android {
         compose = true
         buildConfig = true
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 gradle.taskGraph.whenReady {
@@ -115,4 +119,6 @@ dependencies {
     implementation("com.squareup.retrofit2:converter-gson:3.0.0")
     implementation("com.squareup.retrofit2:retrofit:3.0.0")
     implementation("org.jsoup:jsoup:1.22.1")
+
+    testImplementation("junit:junit:4.13.2")
 }
