@@ -1877,6 +1877,10 @@ private fun SourcePageContent(
 
         when (safeTab) {
             SourceSubTab.Manual -> {
+                InfoCard(
+                    "Manual: open the link to download this app from the source's site, " +
+                        "then tap \"Select downloaded file\" to return it to Morphe."
+                )
                 group.manual.forEach { candidate ->
                     CandidateCard(
                         request = request,
