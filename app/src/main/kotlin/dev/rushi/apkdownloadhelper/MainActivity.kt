@@ -2234,7 +2234,7 @@ private fun DownloadHistorySection(
     onShare: (DownloadHistoryEntry) -> Unit
 ) {
     val context = LocalContext.current
-    var expanded by rememberSaveable { mutableStateOf(true) }
+    var expanded by rememberSaveable { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
@@ -2284,45 +2284,45 @@ private fun RequestLogsCard(
     logs: List<RequestLogEntry>,
     onClearLogs: () -> Unit
 ) {
-    var expanded by rememberSaveable { mutableStateOf(true) }
-    HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(HelperDefaults.ContentPadding),
-            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Request logs",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                HelperOutlinedButton(
-                    text = if (expanded) "Hide" else "Show",
-                    onClick = { expanded = !expanded }
-                )
-                HelperOutlinedButton(
-                    text = "Clear",
-                    onClick = onClearLogs,
-                    modifier = Modifier.widthIn(min = 96.dp)
-                )
-            }
+            Text(
+                text = "Request logs",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.weight(1f)
+            )
+            HelperOutlinedButton(
+                text = if (expanded) "Hide" else "Show",
+                onClick = { expanded = !expanded }
+            )
+            HelperOutlinedButton(
+                text = "Clear",
+                onClick = onClearLogs,
+                modifier = Modifier.widthIn(min = 96.dp)
+            )
+        }
 
-            if (expanded) {
-                if (logs.isEmpty()) {
-                    Text(
-                        text = "No logs yet.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
+        if (expanded) {
+            if (logs.isEmpty()) {
+                InfoCard("No logs yet.")
+            } else {
+                HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
                     SelectionContainer {
-                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(HelperDefaults.ContentPadding),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             logs.takeLast(80).forEach { entry ->
                                 Text(
                                     text = "${entry.time} ${entry.level.badge} ${entry.message}",
