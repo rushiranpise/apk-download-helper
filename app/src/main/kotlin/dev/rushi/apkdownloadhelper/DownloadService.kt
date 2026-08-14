@@ -22,6 +22,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.FileProvider
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.FileOutputStream
 import java.io.SequenceInputStream
 import java.util.Locale
 import java.util.zip.ZipEntry
@@ -34,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,6 +54,9 @@ private const val NOTIFICATION_ID_PROGRESS = 1001
 private const val NOTIFICATION_ID_DONE = 1002
 private const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
 private const val PREFS_PENDING = "pending_download_result"
+private const val MAX_DOWNLOAD_ATTEMPTS = 3
+private const val DOWNLOAD_RETRY_BASE_MS = 2_000L
+private const val HTTP_PARTIAL_CONTENT = 206
 
 internal data class PendingDownload(
     val request: HelperRequest,
@@ -241,7 +246,7 @@ internal class DownloadService : Service() {
         }
     }
 
-    private fun runDownload(job: DownloadJobManager.DownloadJob): File {
+    private suspend fun runDownload(job: DownloadJobManager.DownloadJob): File {
         val candidate = job.candidate
         val downloadsDir = temporaryDownloadsDir().apply { mkdirs() }
         val files = candidate.files.ifEmpty {
@@ -318,7 +323,7 @@ internal class DownloadService : Service() {
         downloadJob?.cancel()
     }
 
-    private fun downloadSingleFile(
+    private suspend fun downloadSingleFile(
         candidate: DownloadCandidate,
         downloadFile: CandidateDownloadFile,
         downloadsDir: File
@@ -328,24 +333,21 @@ internal class DownloadService : Service() {
         } else {
             downloadFile.fileName
         }
-        val outputFile = File(downloadsDir, outputName.sanitizeFileName())
-        executeDownload(downloadFile) { total, input ->
-            outputFile.outputStream().use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                var copied = 0L
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    output.write(buffer, 0, read)
-                    copied += read
-                    updateDownloadProgress(candidate, copied, total)
-                }
-            }
+        val safeName = outputName.sanitizeFileName()
+        val outputFile = File(downloadsDir, safeName)
+        val stagedFile = File(downloadsDir, "$safeName.part")
+        downloadToFile(downloadFile, stagedFile) { copied, total ->
+            updateDownloadProgress(candidate, copied, total)
+        }
+        if (outputFile.exists()) outputFile.delete()
+        if (!stagedFile.renameTo(outputFile)) {
+            stagedFile.copyTo(outputFile, overwrite = true)
+            stagedFile.delete()
         }
         return outputFile
     }
 
-    private fun downloadSplitArchive(
+    private suspend fun downloadSplitArchive(
         candidate: DownloadCandidate,
         files: List<CandidateDownloadFile>,
         downloadsDir: File
@@ -356,53 +358,115 @@ internal class DownloadService : Service() {
                 .sanitizeFileName()
         )
         val knownTotal = files.mapNotNull { it.size }.sum().takeIf { it > 0L }
-        var copied = 0L
-
-        ZipOutputStream(outputFile.outputStream()).use { zip ->
-            files.forEachIndexed { index, file ->
-                executeDownload(file) { _, input ->
-                    zip.putNextEntry(ZipEntry(file.fileName.ifBlank { "split_$index.apk" }.sanitizeFileName()))
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        zip.write(buffer, 0, read)
-                        copied += read
-                        knownTotal?.let { updateDownloadProgress(candidate, copied, it) }
-                    }
-                    zip.closeEntry()
-                }
+        var completed = 0L
+        val staged = files.mapIndexed { index, file ->
+            val stagedFile = File(
+                downloadsDir,
+                "${candidate.packageName}-${candidate.source.name}-split_$index.part".sanitizeFileName()
+            )
+            downloadToFile(file, stagedFile) { fileCopied, total ->
+                knownTotal?.let { updateDownloadProgress(candidate, completed + fileCopied, it) }
             }
+            completed += stagedFile.length()
+            stagedFile to file.fileName.ifBlank { "split_$index.apk" }.sanitizeFileName()
         }
 
+        ZipOutputStream(outputFile.outputStream()).use { zip ->
+            staged.forEach { (stagedFile, entryName) ->
+                zip.putNextEntry(ZipEntry(entryName))
+                stagedFile.inputStream().use { input -> input.copyTo(zip) }
+                zip.closeEntry()
+                stagedFile.delete()
+            }
+        }
         return outputFile
     }
 
-    private fun executeDownload(
-        file: CandidateDownloadFile,
-        copy: (total: Long, input: java.io.InputStream) -> Unit
+    private suspend fun downloadToFile(
+        download: CandidateDownloadFile,
+        target: File,
+        onProgress: (copied: Long, total: Long) -> Unit
     ) {
-        val url = file.url.normalizedHttpUrlOrNull()
+        var attempt = 0
+        while (true) {
+            try {
+                performDownloadAttempt(download, target, onProgress)
+                return
+            } catch (error: Throwable) {
+                if (error is CancellationException || error.message == "Canceled") throw error
+                if (attempt >= MAX_DOWNLOAD_ATTEMPTS - 1 || !isTransientDownloadError(error)) throw error
+                attempt++
+                val delayMs = DOWNLOAD_RETRY_BASE_MS * (1L shl (attempt - 1))
+                retryNotification(attempt, delayMs)
+                delay(delayMs)
+            }
+        }
+    }
+
+    private fun performDownloadAttempt(
+        download: CandidateDownloadFile,
+        target: File,
+        onProgress: (copied: Long, total: Long) -> Unit
+    ) {
+        val url = download.url.normalizedHttpUrlOrNull()
             ?: error("Source returned an invalid download URL.".withManualModeHint())
+        val partial = if (target.exists()) target.length() else 0L
         val builder = Request.Builder().url(url)
-        file.referer?.let { builder.header("Referer", it) }
+        download.referer?.let { builder.header("Referer", it) }
+        if (partial > 0L) builder.header("Range", "bytes=$partial-")
 
         val call = downloadClientFor(url).newCall(builder.build())
         activeCall = call
         try {
             call.execute().use { response ->
                 check(response.isSuccessful) { "HTTP ${response.code}" }
-                val total = file.size ?: response.body.contentLength().coerceAtLeast(0L)
+                val resumed = response.code == HTTP_PARTIAL_CONTENT && partial > 0L
+                val total: Long = if (resumed) {
+                    partial + response.body.contentLength().coerceAtLeast(0L)
+                } else {
+                    download.size ?: response.body.contentLength().coerceAtLeast(0L)
+                }
                 val contentType = response.body.contentType()?.toString()
                 response.body.byteStream().use { input ->
-                    validateApkLikeStream(input, contentType).use { validated ->
-                        copy(total, validated)
+                    val source = if (resumed) {
+                        input
+                    } else {
+                        validateApkLikeStream(input, contentType)
+                    }
+                    FileOutputStream(target, resumed).use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        var copied = if (resumed) partial else 0L
+                        while (true) {
+                            val read = source.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            copied += read
+                            onProgress(copied, total)
+                        }
                     }
                 }
             }
         } finally {
             if (activeCall === call) activeCall = null
         }
+    }
+
+    private fun isTransientDownloadError(error: Throwable): Boolean {
+        if (error is java.io.IOException) return true
+        val message = error.message.orEmpty()
+        return Regex("""HTTP (408|429|5\d\d)\b""").containsMatchIn(message)
+    }
+
+    private fun retryNotification(attempt: Int, delayMs: Long) {
+        val candidate = DownloadJobManager.activeJob?.candidate ?: return
+        notifySafe(
+            NOTIFICATION_ID_PROGRESS,
+            buildProgressNotification(
+                candidate,
+                lastPostedPercent.coerceAtLeast(0),
+                "Connection issue — retrying in ${delayMs / 1000}s (attempt $attempt)"
+            )
+        )
     }
 
     private fun downloadClientFor(url: String): OkHttpClient =
@@ -435,7 +499,11 @@ internal class DownloadService : Service() {
         )
     }
 
-    private fun buildProgressNotification(candidate: DownloadCandidate, percent: Int): Notification {
+    private fun buildProgressNotification(
+        candidate: DownloadCandidate,
+        percent: Int,
+        contentText: String? = null
+    ): Notification {
         val contentIntent = requestContentIntent(DownloadJobManager.activeJob?.requestIntentExtras)
         val cancelIntent = PendingIntent.getService(
             this,
@@ -446,7 +514,7 @@ internal class DownloadService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_PROGRESS)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle("Downloading ${candidate.name}")
-            .setContentText(if (percent <= 0) "Preparing…" else "$percent%")
+            .setContentText(contentText ?: if (percent <= 0) "Preparing…" else "$percent%")
             .setProgress(100, percent.coerceIn(0, 100), false)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
