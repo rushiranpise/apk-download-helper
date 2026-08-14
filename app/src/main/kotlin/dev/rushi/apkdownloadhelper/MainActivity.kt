@@ -1620,11 +1620,11 @@ private fun SettingsChoiceRow(
             .clip(shape)
             .clickable(onClick = onClick),
         shape = shape,
-        color = if (selected) colors.primary.copy(alpha = 0.18f) else colors.surfaceColorAtElevation(2.dp),
-        contentColor = colors.onSurface,
+        color = if (selected) colors.primary else colors.surfaceColorAtElevation(2.dp),
+        contentColor = if (selected) colors.onPrimary else colors.onSurface,
         border = BorderStroke(
             1.dp,
-            if (selected) colors.primary.copy(alpha = 0.54f) else colors.outlineVariant.copy(alpha = 0.45f)
+            if (selected) colors.primary else colors.outlineVariant.copy(alpha = 0.45f)
         )
     ) {
         Row(
@@ -1641,7 +1641,11 @@ private fun SettingsChoiceRow(
                 Text(title, fontWeight = FontWeight.Bold)
                 Text(
                     description,
-                    color = colors.onSurfaceVariant,
+                    color = if (selected) {
+                        colors.onPrimary.copy(alpha = 0.72f)
+                    } else {
+                        colors.onSurfaceVariant
+                    },
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
