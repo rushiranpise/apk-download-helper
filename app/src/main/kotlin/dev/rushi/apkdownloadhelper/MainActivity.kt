@@ -1270,7 +1270,10 @@ private fun HelperScreen(
             }
 
             item {
-                AppInfoCard(request)
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SectionTitle("App info")
+                    AppInfoCard(request)
+                }
             }
             when (state) {
                 UiState.Idle,
@@ -1886,14 +1889,19 @@ private fun AppInfoSection(title: String, content: @Composable ColumnScope.() ->
     Column(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text(
-            text = title,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold
-        )
+        SectionTitle(title)
         content()
     }
+}
+
+@Composable
+private fun SectionTitle(title: String) {
+    Text(
+        text = title,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        style = MaterialTheme.typography.labelMedium,
+        fontWeight = FontWeight.SemiBold
+    )
 }
 
 @Composable
@@ -1972,38 +1980,44 @@ private fun SourceTabs(
     val scope = rememberCoroutineScope()
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        SourceSelector(
-            groups = groups,
-            selectedIndex = pagerState.currentPage,
-            onSelect = { index ->
-                scope.launch {
-                    // Slide for adjacent sources (feels like a swipe), but jump
-                    // straight to distant ones instead of dragging the pager
-                    // through every source in between.
-                    if (abs(index - pagerState.currentPage) <= 1) {
-                        pagerState.animateScrollToPage(index)
-                    } else {
-                        pagerState.scrollToPage(index)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionTitle("Sources")
+            SourceSelector(
+                groups = groups,
+                selectedIndex = pagerState.currentPage,
+                onSelect = { index ->
+                    scope.launch {
+                        // Slide for adjacent sources (feels like a swipe), but jump
+                        // straight to distant ones instead of dragging the pager
+                        // through every source in between.
+                        if (abs(index - pagerState.currentPage) <= 1) {
+                            pagerState.animateScrollToPage(index)
+                        } else {
+                            pagerState.scrollToPage(index)
+                        }
                     }
                 }
-            }
-        )
+            )
+        }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
-        ) {
-            HelperOutlinedButton(
-                text = "Refresh",
-                onClick = onRefresh,
-                icon = Icons.Outlined.Refresh,
-                modifier = Modifier.weight(1f)
-            )
-            HelperOutlinedButton(
-                text = "Cancel",
-                onClick = onCancel,
-                modifier = Modifier.weight(1f)
-            )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionTitle("Commands")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+            ) {
+                HelperOutlinedButton(
+                    text = "Refresh",
+                    onClick = onRefresh,
+                    icon = Icons.Outlined.Refresh,
+                    modifier = Modifier.weight(1f)
+                )
+                HelperOutlinedButton(
+                    text = "Cancel",
+                    onClick = onCancel,
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
 
         HorizontalPager(
@@ -2074,11 +2088,14 @@ private fun SourcePageContent(
         ?: SourceSubTab.Latest
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        SubTabRow(
-            tabs = subTabs,
-            selected = safeTab,
-            onSelect = { selectedTab = it }
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            SectionTitle("Variants")
+            SubTabRow(
+                tabs = subTabs,
+                selected = safeTab,
+                onSelect = { selectedTab = it }
+            )
+        }
 
         when (safeTab) {
             SourceSubTab.Manual -> {
