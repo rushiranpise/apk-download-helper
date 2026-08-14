@@ -1,6 +1,5 @@
 package dev.rushi.apkdownloadhelper.play
 
-import android.util.Log
 import com.aurora.gplayapi.data.models.PlayResponse
 import com.aurora.gplayapi.network.IHttpClient
 import java.io.IOException
@@ -31,6 +30,7 @@ class PlayHttpClient(cache: Cache) : IHttpClient {
         .followRedirects(true)
         .followSslRedirects(true)
         .cache(cache)
+        .addInterceptor(dev.rushi.apkdownloadhelper.httpLoggingInterceptor("Play"))
         .build()
 
     override fun post(
@@ -132,7 +132,6 @@ class PlayHttpClient(cache: Cache) : IHttpClient {
                 errorString = if (!it.isSuccessful) it.message else ""
             ).also {
                 _responseCode.value = response.code
-                Log.i("PlayHttpClient", "OKHTTP [${response.code}] ${response.request.url}")
             }
         }
 }

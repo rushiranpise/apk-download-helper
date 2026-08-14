@@ -158,6 +158,7 @@ internal class DownloadService : Service() {
                     .build()
             )
         }
+        .addInterceptor(httpLoggingInterceptor("Download"))
         .build()
 
     private val apkPureClient = OkHttpClient.Builder()
@@ -170,6 +171,7 @@ internal class DownloadService : Service() {
                     .build()
             )
         }
+        .addInterceptor(httpLoggingInterceptor("APKPure"))
         .build()
 
     private val downloader = ApkDownloader(client, apkPureClient, onRetry = ::retryNotification)

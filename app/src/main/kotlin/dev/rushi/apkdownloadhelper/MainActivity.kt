@@ -165,6 +165,7 @@ class MainActivity : ComponentActivity() {
                     .build()
             )
         }
+        .addInterceptor(httpLoggingInterceptor("Web"))
         .build()
     private val apkPureClient = OkHttpClient.Builder()
         .followRedirects(true)
@@ -176,6 +177,7 @@ class MainActivity : ComponentActivity() {
                     .build()
             )
         }
+        .addInterceptor(httpLoggingInterceptor("APKPure"))
         .build()
 
     private val apkPureApi = Retrofit.Builder()
@@ -257,6 +259,7 @@ class MainActivity : ComponentActivity() {
                     onClearHistory = { DownloadHistoryStore.clear(applicationContext) },
                     onClearLogs = { requestLogs.clear() },
                     onCancel = {
+                        appendLog("Query canceled by user.", LogLevel.Warning)
                         setResult(Activity.RESULT_CANCELED)
                         finish()
                     }
@@ -417,7 +420,23 @@ class MainActivity : ComponentActivity() {
                     "version ${request.versionName ?: "any compatible"}, " +
                     "build ${request.versionCodeSummary ?: "any"}, format ${request.requestedFormatLabel}."
             )
+            logQueryIntentExtras()
         }
+    }
+
+    private fun logQueryIntentExtras() {
+        val extras = intent.extras ?: return
+        val dump = extras.keySet().sorted().joinToString(", ") { key ->
+            val value = when (val raw = extras.get(key)) {
+                null -> "null"
+                is Array<*> -> raw.joinToString("|")
+                is LongArray -> raw.joinToString("|")
+                is IntArray -> raw.joinToString("|")
+                else -> raw.toString()
+            }
+            "$key=$value"
+        }
+        if (logcatLoggingEnabled) Log.i(TAG, "Query intent extras: $dump")
     }
 
     private fun logResolveOutcome(
@@ -446,6 +465,13 @@ class MainActivity : ComponentActivity() {
         requestLogs += RequestLogEntry(timestamp, level, message)
         while (requestLogs.size > 200) {
             requestLogs.removeAt(0)
+        }
+        if (logcatLoggingEnabled) {
+            when (level) {
+                LogLevel.Info -> Log.i(TAG, message)
+                LogLevel.Warning -> Log.w(TAG, message)
+                LogLevel.Error -> Log.e(TAG, message)
+            }
         }
     }
 
@@ -754,6 +780,14 @@ class MainActivity : ComponentActivity() {
         }
         setResult(Activity.RESULT_OK, result)
         appendLog("Returned ${pending.fileName} to ${pending.callerPackage}.")
+        if (logcatLoggingEnabled) {
+            Log.i(
+                TAG,
+                "Query result: OK package=${pending.packageName}, " +
+                    "version=${pending.versionName ?: "any"}, source=${pending.sourceName}, " +
+                    "file=${pending.fileName}, uri=${pending.uri}"
+            )
+        }
         DownloadJobManager.clearPendingResult(applicationContext)
         finish()
         return true
@@ -881,6 +915,14 @@ class MainActivity : ComponentActivity() {
 
         setResult(Activity.RESULT_OK, result)
         appendLog("Returned installed ${candidate.packageName} to ${activeRequest.callerPackage}.")
+        if (logcatLoggingEnabled) {
+            Log.i(
+                TAG,
+                "Query result: OK package=${candidate.packageName}, " +
+                    "version=${candidate.versionName ?: "any"}, source=${candidate.source.label}, " +
+                    "useInstalledApp=true"
+            )
+        }
         finish()
     }
 
@@ -1557,10 +1599,22 @@ private fun HelperSettingsCard(
                 )
             }
 
-            TemporaryCleanupRow(
+            SettingSwitchRow(
+                title = "Clean up hand-off files",
+                description = "Remove temporary APKs after Morphe gets them, and clear old cache files on launch.",
                 checked = settings.deleteTemporaryAfterHandoff,
                 onCheckedChange = {
                     onSettingsChange(settings.copy(deleteTemporaryAfterHandoff = it))
+                }
+            )
+
+            SettingsGroupTitle("Logging")
+            SettingSwitchRow(
+                title = "Log to Logcat",
+                description = "Write request, result, and source HTTP details to the system log (adb logcat) for debugging.",
+                checked = settings.logcatLogging,
+                onCheckedChange = {
+                    onSettingsChange(settings.copy(logcatLogging = it))
                 }
             )
         }
@@ -1626,7 +1680,9 @@ private fun SettingsChoiceRow(
 }
 
 @Composable
-private fun TemporaryCleanupRow(
+private fun SettingSwitchRow(
+    title: String,
+    description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
@@ -1648,9 +1704,9 @@ private fun TemporaryCleanupRow(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text("Clean up hand-off files", fontWeight = FontWeight.Bold)
+                Text(title, fontWeight = FontWeight.Bold)
                 Text(
-                    "Remove temporary APKs after Morphe gets them, and clear old cache files on launch.",
+                    description,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodyMedium
                 )

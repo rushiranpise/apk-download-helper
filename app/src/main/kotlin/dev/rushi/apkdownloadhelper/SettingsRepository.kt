@@ -8,10 +8,18 @@ import java.io.File
 internal const val PREFS_NAME = "helper_settings"
 internal const val TEMP_CLEANUP_MAX_AGE_MS = 6 * 60 * 60 * 1000L
 
+/**
+ * Mirrors the user's Logcat preference so long-lived clients (built before
+ * settings load) can check it per request without holding a Context.
+ */
+@Volatile
+internal var logcatLoggingEnabled = true
+
 internal data class HelperSettings(
     val downloadLocation: DownloadLocation = DownloadLocation.TEMPORARY,
     val networkPolicy: NetworkPolicy = NetworkPolicy.WIFI_AND_MOBILE,
-    val deleteTemporaryAfterHandoff: Boolean = true
+    val deleteTemporaryAfterHandoff: Boolean = true,
+    val logcatLogging: Boolean = true
 )
 
 internal enum class DownloadLocation(
@@ -74,7 +82,7 @@ internal enum class NetworkPolicy(
 
 internal fun Context.loadHelperSettings(): HelperSettings {
     val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    return HelperSettings(
+    val settings = HelperSettings(
         downloadLocation = enumValueOrDefault(
             prefs.getString("download_location", null),
             DownloadLocation.TEMPORARY
@@ -83,16 +91,21 @@ internal fun Context.loadHelperSettings(): HelperSettings {
             prefs.getString("network_policy", null),
             NetworkPolicy.WIFI_AND_MOBILE
         ),
-        deleteTemporaryAfterHandoff = prefs.getBoolean("delete_temporary_after_handoff", true)
+        deleteTemporaryAfterHandoff = prefs.getBoolean("delete_temporary_after_handoff", true),
+        logcatLogging = prefs.getBoolean("logcat_logging", true)
     )
+    logcatLoggingEnabled = settings.logcatLogging
+    return settings
 }
 
 internal fun Context.saveHelperSettings(settings: HelperSettings) {
+    logcatLoggingEnabled = settings.logcatLogging
     getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString("download_location", settings.downloadLocation.name)
         .putString("network_policy", settings.networkPolicy.name)
         .putBoolean("delete_temporary_after_handoff", settings.deleteTemporaryAfterHandoff)
+        .putBoolean("logcat_logging", settings.logcatLogging)
         .apply()
 }
 
