@@ -25,7 +25,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,7 +42,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
@@ -70,11 +74,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1785,111 +1791,125 @@ private fun SourceTabs(
 ) {
     val groups = result.sourceGroups
 
-    var selectedIndex by remember(groups.map { it.source }) { mutableIntStateOf(0) }
-    val safeSelectedIndex = selectedIndex.coerceIn(0, groups.lastIndex)
-    val selectedGroup = groups[safeSelectedIndex]
-    val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+    val pagerState = rememberPagerState(initialPage = 0) { groups.size }
+    val selectorState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(pagerState.currentPage) {
+        selectorState.animateScrollToItem(pagerState.currentPage)
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         SourceSelector(
             groups = groups,
-            selectedIndex = safeSelectedIndex,
-            onSelect = { selectedIndex = it }
+            selectedIndex = pagerState.currentPage,
+            listState = selectorState,
+            onSelect = { index ->
+                scope.launch { pagerState.animateScrollToPage(index) }
+            }
         )
 
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .pointerInput(groups.size, safeSelectedIndex, swipeThresholdPx) {
-                    if (groups.size < 2) return@pointerInput
-                    var totalDrag = 0f
-                    detectHorizontalDragGestures(
-                        onDragStart = { totalDrag = 0f },
-                        onHorizontalDrag = { _, dragAmount ->
-                            totalDrag += dragAmount
-                        },
-                        onDragEnd = {
-                            if (abs(totalDrag) >= swipeThresholdPx) {
-                                selectedIndex = if (totalDrag < 0) {
-                                    (safeSelectedIndex + 1).coerceAtMost(groups.lastIndex)
-                                } else {
-                                    (safeSelectedIndex - 1).coerceAtLeast(0)
-                                }
-                            }
-                        },
-                        onDragCancel = { totalDrag = 0f }
-                    )
-                },
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            if (selectedGroup.manual.isNotEmpty()) {
-                SectionHeader("Manual")
-                selectedGroup.manual.forEach { candidate ->
-                    CandidateCard(
+        HorizontalPager(
+            state = pagerState,
+            key = { index -> groups[index].source },
+            beyondViewportPageCount = 1,
+            modifier = Modifier.fillMaxWidth()
+        ) { page ->
+            SourcePageContent(
+                request = request,
+                group = groups[page],
+                onResolve = onResolve,
+                onDownload = onDownload,
+                onPickDownloadedFile = onPickDownloadedFile,
+                onUseInstalledApp = onUseInstalledApp,
+                onVersionHistory = onVersionHistory,
+                onDownloadVersion = onDownloadVersion,
+                installedPackageRefreshToken = installedPackageRefreshToken
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourcePageContent(
+    request: HelperRequest,
+    group: SourceCandidateGroup,
+    onResolve: (DownloadSource, CandidateOption) -> Unit,
+    onDownload: (DownloadCandidate) -> Unit,
+    onPickDownloadedFile: (DownloadCandidate) -> Unit,
+    onUseInstalledApp: (DownloadCandidate) -> Unit,
+    onVersionHistory: (DownloadSource) -> Unit,
+    onDownloadVersion: (DownloadCandidate) -> Unit,
+    installedPackageRefreshToken: Int
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        if (group.manual.isNotEmpty()) {
+            SectionHeader("Manual")
+            group.manual.forEach { candidate ->
+                CandidateCard(
+                    request = request,
+                    candidate = candidate,
+                    onDownload = { onDownload(candidate) },
+                    onPickDownloadedFile = { onPickDownloadedFile(candidate) },
+                    onUseInstalledApp = { onUseInstalledApp(candidate) },
+                    installedPackageRefreshToken = installedPackageRefreshToken
+                )
+            }
+        }
+
+        if (request.hasKnownVersionRequest) {
+            when (group.source) {
+                DownloadSource.AURORA -> {
+                    InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
+                }
+                DownloadSource.PLAY -> {
+                    InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
+                }
+                else -> {
+                    SectionHeader("Recommended")
+                    CandidateResolveSection(
                         request = request,
-                        candidate = candidate,
-                        onDownload = { onDownload(candidate) },
-                        onPickDownloadedFile = { onPickDownloadedFile(candidate) },
-                        onUseInstalledApp = { onUseInstalledApp(candidate) },
+                        state = group.recommended,
+                        actionText = "Find recommended",
+                        loadingText = "Checking recommended version...",
+                        emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
+                        onResolve = {
+                            onResolve(group.source, CandidateOption.REQUESTED)
+                        },
+                        onDownload = onDownload,
+                        onPickDownloadedFile = onPickDownloadedFile,
+                        onUseInstalledApp = onUseInstalledApp,
                         installedPackageRefreshToken = installedPackageRefreshToken
                     )
                 }
             }
+        }
 
-            if (request.hasKnownVersionRequest) {
-                when (selectedGroup.source) {
-                    DownloadSource.AURORA -> {
-                        InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
-                    }
-                    DownloadSource.PLAY -> {
-                        InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
-                    }
-                    else -> {
-                        SectionHeader("Recommended")
-                        CandidateResolveSection(
-                            request = request,
-                            state = selectedGroup.recommended,
-                            actionText = "Find recommended",
-                            loadingText = "Checking recommended version...",
-                            emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
-                            onResolve = {
-                                onResolve(selectedGroup.source, CandidateOption.REQUESTED)
-                            },
-                            onDownload = onDownload,
-                            onPickDownloadedFile = onPickDownloadedFile,
-                            onUseInstalledApp = onUseInstalledApp,
-                            installedPackageRefreshToken = installedPackageRefreshToken
-                        )
-                    }
-                }
-            }
+        SectionHeader("Latest")
+        CandidateResolveSection(
+            request = request,
+            state = group.latest,
+            actionText = "Find latest",
+            loadingText = "Checking latest version...",
+            emptyText = "Latest version was not found on this source. Use Manual mode for this source instead.",
+            onResolve = {
+                onResolve(group.source, CandidateOption.LATEST)
+            },
+            onDownload = onDownload,
+            onPickDownloadedFile = onPickDownloadedFile,
+            onUseInstalledApp = onUseInstalledApp,
+            installedPackageRefreshToken = installedPackageRefreshToken
+        )
 
-            SectionHeader("Latest")
-            CandidateResolveSection(
-                request = request,
-                state = selectedGroup.latest,
-                actionText = "Find latest",
-                loadingText = "Checking latest version...",
-                emptyText = "Latest version was not found on this source. Use Manual mode for this source instead.",
-                onResolve = {
-                    onResolve(selectedGroup.source, CandidateOption.LATEST)
-                },
-                onDownload = onDownload,
-                onPickDownloadedFile = onPickDownloadedFile,
-                onUseInstalledApp = onUseInstalledApp,
-                installedPackageRefreshToken = installedPackageRefreshToken
+        if (group.source != DownloadSource.AURORA &&
+            group.source != DownloadSource.PLAY
+        ) {
+            SectionHeader("Version history")
+            VersionHistorySection(
+                state = group.history,
+                onResolve = { onVersionHistory(group.source) },
+                onDownloadVersion = onDownloadVersion
             )
-
-            if (selectedGroup.source != DownloadSource.AURORA &&
-                selectedGroup.source != DownloadSource.PLAY
-            ) {
-                SectionHeader("Version history")
-                VersionHistorySection(
-                    state = selectedGroup.history,
-                    onResolve = { onVersionHistory(selectedGroup.source) },
-                    onDownloadVersion = onDownloadVersion
-                )
-            }
         }
     }
 }
@@ -2070,15 +2090,15 @@ private fun CandidateResolveSection(
 private fun SourceSelector(
     groups: List<SourceCandidateGroup>,
     selectedIndex: Int,
+    listState: LazyListState,
     onSelect: (Int) -> Unit
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
+    LazyRow(
+        state = listState,
+        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
     ) {
-        groups.forEachIndexed { index, group ->
+        itemsIndexed(groups) { index, group ->
             SourcePill(
                 text = group.source.label,
                 selected = index == selectedIndex,
