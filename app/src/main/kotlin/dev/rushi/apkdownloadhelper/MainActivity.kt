@@ -1761,19 +1761,29 @@ private fun AppInfoCard(request: HelperRequest) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(HelperDefaults.ContentPadding),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "App info",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
+            AppInfoHeader(request)
+
+            androidx.compose.material3.HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
             )
-            AppInfoRow(label = "App name", value = request.appName)
-            AppInfoRow(label = "Package name", value = request.packageName)
-            AppInfoRow(label = "Version", value = request.requestedVersionName ?: "Any compatible")
-            AppInfoRow(label = "Version code", value = request.versionCodeSummary ?: "Any")
-            AppInfoRow(label = "Format", value = request.requestedFormatLabel)
-            AppInfoRow(label = "Device ABI", value = request.abiSummary)
+
+            AppInfoSection("Request") {
+                val versionLabel = listOfNotNull(
+                    request.requestedVersionName,
+                    request.versionCodeSummary?.let { "build $it" }
+                ).joinToString(" · ").ifBlank { "Any compatible" }
+                AppInfoRow(label = "Version", value = versionLabel)
+                AppInfoRow(label = "Format", value = request.requestedFormatLabel)
+            }
+
+            val abis = request.availableAbis
+            if (abis.isNotEmpty()) {
+                AppInfoSection("Device") {
+                    AppInfoChipRow(label = "ABI", items = abis)
+                }
+            }
 
             if (request.stockInstallRequired) {
                 Text(
@@ -1786,6 +1796,107 @@ private fun AppInfoCard(request: HelperRequest) {
 }
 
 @Composable
+private fun AppInfoHeader(request: HelperRequest) {
+    val context = LocalContext.current
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+    var copied by remember(request.packageName) { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AppAvatar(initial = request.appName.firstOrNull()?.uppercaseChar() ?: '?')
+
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = request.appName,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = request.packageName,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Text(
+                    text = if (copied) "Copied" else "Copy",
+                    color = if (copied) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable {
+                            clipboard?.setPrimaryClip(
+                                ClipData.newPlainText("package", request.packageName)
+                            )
+                            copied = true
+                        }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppAvatar(initial: Char) {
+    val colors = listOf(
+        Color(0xFF1A73E8),
+        Color(0xFF34A853),
+        Color(0xFFFBBC04),
+        Color(0xFFEA4335),
+        Color(0xFF4285F4),
+        Color(0xFFF25C1B)
+    )
+    val color = colors[initial.code % colors.size]
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(color.copy(alpha = 0.85f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = initial.toString(),
+            color = Color.White,
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
+private fun AppInfoSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text(
+            text = title,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        content()
+    }
+}
+
+@Composable
 private fun AppInfoRow(label: String, value: String) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1794,15 +1905,39 @@ private fun AppInfoRow(label: String, value: String) {
         Text(
             text = label,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(0.42f)
+            modifier = Modifier.weight(0.30f)
         )
         Text(
             text = value,
             fontWeight = FontWeight.Medium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(0.58f)
+            modifier = Modifier.weight(0.70f)
         )
+    }
+}
+
+@Composable
+private fun AppInfoChipRow(label: String, items: List<String>) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(0.30f)
+        )
+        FlowRow(
+            modifier = Modifier.weight(0.70f),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            items.forEach { abi ->
+                HelperChip(text = abi)
+            }
+        }
     }
 }
 
@@ -2896,8 +3031,14 @@ internal data class HelperRequest(
                 appName = intent.getStringExtra(DownloadHelperContract.EXTRA_APP_NAME) ?: packageName,
                 versionName = intent.getStringExtra(DownloadHelperContract.EXTRA_VERSION_NAME),
                 versionCode = if (intent.hasExtra(DownloadHelperContract.EXTRA_VERSION_CODE)) {
+                    // Callers send the version code as either an Int (am --ei, some
+                    // app stores) or a Long. getLongExtra silently returns the
+                    // default for Int extras, so try Long first and fall back to Int.
                     intent.getLongExtra(DownloadHelperContract.EXTRA_VERSION_CODE, 0L)
                         .takeIf { it > 0L }
+                        ?: intent.getIntExtra(DownloadHelperContract.EXTRA_VERSION_CODE, 0)
+                            .toLong()
+                            .takeIf { it > 0L }
                 } else {
                     null
                 },
