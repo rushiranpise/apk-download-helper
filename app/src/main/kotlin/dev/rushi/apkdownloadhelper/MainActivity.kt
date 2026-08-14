@@ -3288,10 +3288,16 @@ internal interface AptoideApi {
     suspend fun getAppById(@Query("app_id") appId: Long): AptoideGetAppResponse
 
     @GET("listAppVersions")
-    suspend fun listAppVersionsByPackage(@Query("package_name") packageName: String): AptoideVersionListResponse
+    suspend fun listAppVersionsByPackage(
+        @Query("package_name") packageName: String,
+        @Query("limit") limit: Long = 100L
+    ): AptoideVersionListResponse
 
     @GET("listAppVersions")
-    suspend fun listAppVersionsById(@Query("app_id") appId: Long): AptoideVersionListResponse
+    suspend fun listAppVersionsById(
+        @Query("app_id") appId: Long,
+        @Query("limit") limit: Long = 100L
+    ): AptoideVersionListResponse
 }
 
 internal data class AptoideSearchRequest(

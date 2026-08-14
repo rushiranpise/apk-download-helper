@@ -37,10 +37,12 @@ internal class FakeAptoideApi(
     override suspend fun getAppById(appId: Long): AptoideGetAppResponse =
         AptoideGetAppResponse(nodes = AptoideNodes(meta = AptoideMetaNode(data = appById)))
 
-    override suspend fun listAppVersionsByPackage(packageName: String): AptoideVersionListResponse =
-        AptoideVersionListResponse()
+    override suspend fun listAppVersionsByPackage(
+        packageName: String,
+        limit: Long
+    ): AptoideVersionListResponse = AptoideVersionListResponse()
 
-    override suspend fun listAppVersionsById(appId: Long): AptoideVersionListResponse =
+    override suspend fun listAppVersionsById(appId: Long, limit: Long): AptoideVersionListResponse =
         AptoideVersionListResponse()
 }
 

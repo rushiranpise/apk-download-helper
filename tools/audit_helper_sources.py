@@ -298,28 +298,37 @@ def audit_apkpure(client: HttpClient, request: AppRequest) -> SourceResult:
         return make_result(request, "apkpure", status, url=response.url, note=f"HTTP {response.status}")
 
     page = response.text
-    attrs = [
-        parse_attrs(tag)
-        for tag in re.findall(r"<[^>]*\bversion-item\b[^>]*>", page, flags=re.I)
-    ]
-    attrs = [
-        item
-        for item in attrs
-        if item.get("data-dt-package_name", "").lower() == request.package_name.lower()
-    ]
+    matches = list(re.finditer(r"<[^>]*\bversion-item\b[^>]*>", page, flags=re.I))
+    items: list[tuple[dict[str, str], list[str]]] = []
+    for index, match in enumerate(matches):
+        attrs = parse_attrs(match.group(0))
+        if attrs.get("data-dt-package_name", "").lower() != request.package_name.lower():
+            continue
+        block_end = matches[index + 1].start() if index + 1 < len(matches) else len(page)
+        block = page[match.end() : block_end]
+        tags = [
+            strip_tags(tag).strip().lower()
+            for tag in re.findall(
+                r"<span[^>]*class=[\"'][^\"']*tag[^\"']*[\"'][^>]*>(.*?)</span>",
+                block,
+                re.I,
+            )
+        ]
+        items.append((attrs, [tag for tag in tags if tag]))
+
     canonical = extract_canonical(page)
-    package_found = bool(attrs) or canonical.rstrip("/").endswith("/" + request.package_name)
+    package_found = bool(items) or canonical.rstrip("/").endswith("/" + request.package_name)
     versions = [
         (
-            item.get("data-dt-version") or None,
-            to_int(item.get("data-dt-version_code")),
-            " ".join(re.findall(r"<span[^>]*class=[\"'][^\"']*tag[^\"']*[\"'][^>]*>(.*?)</span>", page, re.I)),
+            attrs.get("data-dt-version") or None,
+            to_int(attrs.get("data-dt-version_code")),
+            " ".join(tags),
         )
-        for item in attrs
+        for attrs, tags in items
     ]
     latest = first_non_empty([version for version, _, _ in versions]) or source_version_from_text(page)
     matched = first_match(request, versions)
-    found_format = infer_format(page)
+    found_format = infer_format_from_tags(matched[2]) if matched else None
     status = classify(package_found, bool(matched), latest, request)
     return make_result(
         request,
@@ -332,14 +341,24 @@ def audit_apkpure(client: HttpClient, request: AppRequest) -> SourceResult:
         found_version_code=matched[1] if matched else None,
         found_format=found_format,
         url=canonical or response.url,
-        note="version list parsed" if attrs else "no version items found",
+        note="version list parsed" if items else "no version items found",
     )
+
+
+def infer_format_from_tags(tag_text: str) -> str | None:
+    if not tag_text:
+        return None
+    lowered = tag_text.lower()
+    for kind in ("apks", "xapk", "apkm", "apk"):
+        if kind in lowered:
+            return kind
+    return None
 
 
 def audit_aptoide(client: HttpClient, request: AppRequest) -> SourceResult:
     package = urllib.parse.quote(request.package_name)
     latest_url = f"https://ws75.aptoide.com/api/7/getApp?package_name={package}"
-    versions_url = f"https://ws75.aptoide.com/api/7/listAppVersions?package_name={package}"
+    versions_url = f"https://ws75.aptoide.com/api/7/listAppVersions?package_name={package}&limit=100"
 
     latest_data = json_response(client.get(latest_url))
     versions_data = json_response(client.get(versions_url))
