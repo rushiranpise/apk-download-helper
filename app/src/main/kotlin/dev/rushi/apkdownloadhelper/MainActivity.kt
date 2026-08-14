@@ -1628,14 +1628,11 @@ private fun HelperSettingsCard(
     settings: HelperSettings,
     onSettingsChange: (HelperSettings) -> Unit
 ) {
-    HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(HelperDefaults.ContentPadding),
-            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
-        ) {
-            SettingsGroupTitle("Save downloads")
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+    ) {
+        SettingsGroupCard("Save downloads") {
             DownloadLocation.entries.forEach { location ->
                 SettingsChoiceRow(
                     title = location.title,
@@ -1646,8 +1643,9 @@ private fun HelperSettingsCard(
                     }
                 )
             }
+        }
 
-            SettingsGroupTitle("Connection")
+        SettingsGroupCard("Connection") {
             NetworkPolicy.entries.forEach { policy ->
                 SettingsChoiceRow(
                     title = policy.title,
@@ -1658,7 +1656,6 @@ private fun HelperSettingsCard(
                     }
                 )
             }
-
             SettingSwitchRow(
                 title = "Clean up hand-off files",
                 description = "Remove temporary APKs after Morphe gets them, and clear old cache files on launch.",
@@ -1667,8 +1664,9 @@ private fun HelperSettingsCard(
                     onSettingsChange(settings.copy(deleteTemporaryAfterHandoff = it))
                 }
             )
+        }
 
-            SettingsGroupTitle("Logging")
+        SettingsGroupCard("Logging") {
             SettingSwitchRow(
                 title = "Log to Logcat",
                 description = "Write request, result, and source HTTP details to the system log (adb logcat) for debugging.",
@@ -1677,6 +1675,24 @@ private fun HelperSettingsCard(
                     onSettingsChange(settings.copy(logcatLogging = it))
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroupCard(
+    title: String,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+        ) {
+            SettingsGroupTitle(title)
+            content()
         }
     }
 }
