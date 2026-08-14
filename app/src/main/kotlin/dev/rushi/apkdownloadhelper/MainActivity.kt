@@ -1843,7 +1843,12 @@ private fun SourcePageContent(
     val subTabs = remember(group, request) {
         buildList {
             if (group.manual.isNotEmpty()) add(SourceSubTab.Manual)
-            if (request.hasKnownVersionRequest) add(SourceSubTab.Recommended)
+            if (request.hasKnownVersionRequest &&
+                group.source != DownloadSource.AURORA &&
+                group.source != DownloadSource.PLAY
+            ) {
+                add(SourceSubTab.Recommended)
+            }
             add(SourceSubTab.Latest)
             if (group.source != DownloadSource.AURORA &&
                 group.source != DownloadSource.PLAY
@@ -1883,31 +1888,21 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.Recommended -> {
-                when (group.source) {
-                    DownloadSource.AURORA -> {
-                        InfoCard("Aurora only provides the latest Play Store version. Use Manual mode if you need a specific version.")
-                    }
-                    DownloadSource.PLAY -> {
-                        InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
-                    }
-                    else -> {
-                        SectionHeader("Recommended")
-                        CandidateResolveSection(
-                            request = request,
-                            state = group.recommended,
-                            actionText = "Find recommended",
-                            loadingText = "Checking recommended version...",
-                            emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
-                            onResolve = {
-                                onResolve(group.source, CandidateOption.REQUESTED)
-                            },
-                            onDownload = onDownload,
-                            onPickDownloadedFile = onPickDownloadedFile,
-                            onUseInstalledApp = onUseInstalledApp,
-                            installedPackageRefreshToken = installedPackageRefreshToken
-                        )
-                    }
-                }
+                SectionHeader("Recommended")
+                CandidateResolveSection(
+                    request = request,
+                    state = group.recommended,
+                    actionText = "Find recommended",
+                    loadingText = "Checking recommended version...",
+                    emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
+                    onResolve = {
+                        onResolve(group.source, CandidateOption.REQUESTED)
+                    },
+                    onDownload = onDownload,
+                    onPickDownloadedFile = onPickDownloadedFile,
+                    onUseInstalledApp = onUseInstalledApp,
+                    installedPackageRefreshToken = installedPackageRefreshToken
+                )
             }
 
             SourceSubTab.Latest -> {
