@@ -1238,40 +1238,44 @@ private fun SourceHealthCard(entries: List<SourceHealthEntry>) {
         else -> "Sources not checked yet"
     }
 
-    HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(HelperDefaults.ContentPadding),
-            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-                verticalAlignment = Alignment.CenterVertically
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Text("Source health", fontWeight = FontWeight.Bold)
-                    Text(
-                        text = summary,
-                        color = if (hasFailures) {
-                            MaterialTheme.colorScheme.error
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                HelperOutlinedButton(
-                    text = if (expanded) "Hide" else "Show",
-                    onClick = { expanded = !expanded }
+                Text(
+                    text = "Source health",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = summary,
+                    color = if (hasFailures) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
+            HelperOutlinedButton(
+                text = if (expanded) "Hide" else "Show",
+                onClick = { expanded = !expanded }
+            )
+        }
 
-            if (expanded) {
+        if (expanded) {
+            if (entries.isEmpty()) {
+                InfoCard("No sources checked yet. Resolve candidates on the main screen to see per-source health here.")
+            } else {
                 entries.forEach { entry ->
                     SourceHealthRow(entry)
                 }
@@ -1485,21 +1489,7 @@ private fun HelperSettingsScreen(
         }
 
         item {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
-            ) {
-                Text(
-                    text = "Source health",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                if (healthEntries.isEmpty()) {
-                    InfoCard("No sources checked yet. Resolve candidates on the main screen to see per-source health here.")
-                } else {
-                    SourceHealthCard(healthEntries)
-                }
-            }
+            SourceHealthCard(healthEntries)
         }
 
         item {
