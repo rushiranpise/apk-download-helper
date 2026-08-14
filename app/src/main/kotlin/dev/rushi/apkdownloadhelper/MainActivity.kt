@@ -1803,7 +1803,11 @@ private fun SourceTabs(
         HorizontalPager(
             state = pagerState,
             key = { index -> groups[index].source },
-            beyondViewportPageCount = 1,
+            // Only compose the current page so the pager's height matches the page on
+            // screen instead of the tallest neighbor (which left dead space on short
+            // pages). Pages are top-aligned so content never floats away from the pills.
+            beyondViewportPageCount = 0,
+            verticalAlignment = Alignment.Top,
             modifier = Modifier.fillMaxWidth()
         ) { page ->
             SourcePageContent(
