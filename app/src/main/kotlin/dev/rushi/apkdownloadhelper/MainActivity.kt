@@ -1159,9 +1159,11 @@ private fun HelperScreen(
                 ) {
                     Text(
                         text = "APK Download Helper",
-                        style = MaterialTheme.typography.headlineMedium,
+                        style = MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
                     HelperOutlinedButton(
