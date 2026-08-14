@@ -1643,6 +1643,14 @@ private fun HelperSettingsCard(
                     }
                 )
             }
+            SettingSwitchRow(
+                title = "Clean up hand-off files",
+                description = "Remove temporary APKs after Morphe gets them, and clear old cache files on launch.",
+                checked = settings.deleteTemporaryAfterHandoff,
+                onCheckedChange = {
+                    onSettingsChange(settings.copy(deleteTemporaryAfterHandoff = it))
+                }
+            )
         }
 
         SettingsGroupCard("Connection") {
@@ -1656,14 +1664,6 @@ private fun HelperSettingsCard(
                     }
                 )
             }
-            SettingSwitchRow(
-                title = "Clean up hand-off files",
-                description = "Remove temporary APKs after Morphe gets them, and clear old cache files on launch.",
-                checked = settings.deleteTemporaryAfterHandoff,
-                onCheckedChange = {
-                    onSettingsChange(settings.copy(deleteTemporaryAfterHandoff = it))
-                }
-            )
         }
 
         SettingsGroupCard("Logging") {
