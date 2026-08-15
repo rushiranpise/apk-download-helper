@@ -2475,10 +2475,15 @@ private fun VersionHistoryRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = if (showOpenLink) {
-                        "No direct download — open the version page"
-                    } else {
-                        candidate.fileKind.uppercase(Locale.US)
+                    text = when {
+                        showOpenLink -> "No direct download — open the version page"
+                        // History rows know only the version page until the
+                        // user taps Download, which resolves the real format.
+                        // "web" is a placeholder, not an actual file type, so
+                        // don't render it as if the row just links out.
+                        candidate.fileKind.equals("web", ignoreCase = true) ->
+                            "Direct download — format resolved on download"
+                        else -> candidate.fileKind.uppercase(Locale.US)
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall
