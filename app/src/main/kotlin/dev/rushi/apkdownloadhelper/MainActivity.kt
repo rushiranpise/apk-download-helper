@@ -747,7 +747,17 @@ class MainActivity : ComponentActivity() {
             "Downloading ${candidate.source.label} ${candidate.option.labelForLogs} " +
                 "${candidate.versionDisplay} (${candidate.fileKind.uppercase(Locale.US)})."
         )
-        uiState = UiState.Downloading(candidate, 0)
+        uiState = if (fastModeActive) {
+            UiState.FastMode(
+                FastModeProgress(
+                    sourceLabel = candidate.source.label,
+                    detail = "Downloading from ${candidate.source.label}…",
+                    percent = 0
+                )
+            )
+        } else {
+            UiState.Downloading(candidate, 0)
+        }
         pendingDownload = PendingDownload(activeRequest, candidate, settings)
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -823,6 +833,7 @@ class MainActivity : ComponentActivity() {
             .filter { it != DownloadSource.AURORA && it != DownloadSource.PLAY }
             .toMutableList()
         appendLog("Fast Mode: auto-searching sources for the exact requested version.", LogLevel.Info)
+        uiState = UiState.FastMode(FastModeProgress(detail = "Auto-searching sources…"))
         lifecycleScope.launch {
             fastModeNext(request)
         }
@@ -833,7 +844,9 @@ class MainActivity : ComponentActivity() {
         while (queue.isNotEmpty()) {
             val source = queue.removeAt(0)
             appendLog("Fast Mode: checking ${source.label} for ${request.requestedVersionLabel}...")
-            uiState = UiState.Loading
+            uiState = UiState.FastMode(
+                FastModeProgress(sourceLabel = source.label, detail = "Checking ${source.label}…")
+            )
             val candidate = withContext(Dispatchers.IO) {
                 runCatching { fastModeFindCandidate(request, source) }.getOrNull()
             }
@@ -842,6 +855,13 @@ class MainActivity : ComponentActivity() {
                     "Fast Mode: found ${candidate.versionDisplay} on ${source.label} " +
                         "(${candidate.fileKind.uppercase(Locale.US)}) — downloading.",
                     LogLevel.Info
+                )
+                uiState = UiState.FastMode(
+                    FastModeProgress(
+                        sourceLabel = source.label,
+                        detail = "Found ${candidate.versionDisplay} — downloading…",
+                        percent = 0
+                    )
                 )
                 downloadAndReturn(candidate)
                 return
@@ -853,7 +873,14 @@ class MainActivity : ComponentActivity() {
         appendLog("Fast Mode: no source had the exact version. Use the sources below.", LogLevel.Warning)
         val activeRequest = request
         uiState = if (activeRequest != null) {
-            UiState.Ready(initialCandidateResult(activeRequest))
+            UiState.FastMode(
+                FastModeProgress(
+                    detail = "No source had the exact version ${request.requestedVersionLabel}.",
+                    done = true,
+                    succeeded = false,
+                    result = initialCandidateResult(activeRequest)
+                )
+            )
         } else {
             UiState.Idle
         }
@@ -880,7 +907,17 @@ class MainActivity : ComponentActivity() {
         when (event) {
             null -> Unit
             is DownloadJobManager.Event.Progress -> {
-                uiState = UiState.Downloading(event.candidate, event.percent)
+                uiState = if (fastModeActive) {
+                    UiState.FastMode(
+                        FastModeProgress(
+                            sourceLabel = event.candidate.source.label,
+                            detail = "Downloading from ${event.candidate.source.label}…",
+                            percent = event.percent
+                        )
+                    )
+                } else {
+                    UiState.Downloading(event.candidate, event.percent)
+                }
             }
             is DownloadJobManager.Event.Completed -> {
                 // StateFlow replays its last value to every new collector, so a
@@ -896,12 +933,25 @@ class MainActivity : ComponentActivity() {
                             "Download is ready; ${event.result.callerPackage} can request it again to receive the file.",
                             LogLevel.Warning
                         )
-                        // Opened standalone with no caller to return to — leave the
-                        // Downloading state so the screen is usable again.
+                        // Opened standalone with no caller to return to — keep the
+                        // Fast Mode card showing the result and the source list
+                        // reachable beneath it.
+                        val wasFastMode = fastModeActive
                         fastModeActive = false
                         fastModeQueue = null
                         val activeRequest = request
-                        uiState = if (activeRequest != null) {
+                        uiState = if (wasFastMode) {
+                            UiState.FastMode(
+                                FastModeProgress(
+                                    sourceLabel = event.result.sourceName,
+                                    detail = "Download ready: ${event.result.fileName}. " +
+                                        "Request it again from Morphe to receive it.",
+                                    done = true,
+                                    succeeded = true,
+                                    result = activeRequest?.let { initialCandidateResult(it) }
+                                )
+                            )
+                        } else if (activeRequest != null) {
                             UiState.Ready(initialCandidateResult(activeRequest))
                         } else {
                             UiState.Idle
@@ -926,7 +976,19 @@ class MainActivity : ComponentActivity() {
                     } else {
                         fastModeActive = false
                         fastModeQueue = null
-                        uiState = UiState.Error(event.message)
+                        uiState = if (activeRequest != null) {
+                            UiState.FastMode(
+                                FastModeProgress(
+                                    sourceLabel = event.candidate.source.label,
+                                    detail = "Fast Mode failed: ${event.message.lineSequence().firstOrNull().orEmpty().take(160)}",
+                                    done = true,
+                                    succeeded = false,
+                                    result = initialCandidateResult(activeRequest)
+                                )
+                            )
+                        } else {
+                            UiState.Error(event.message)
+                        }
                     }
                 } else {
                     uiState = UiState.Error(event.message)
@@ -1495,6 +1557,27 @@ private fun HelperScreen(
                 is UiState.Downloading -> item { DownloadingState(state, onCancelDownload) }
                 is UiState.Error -> item {
                     ErrorState(message = state.message, onRefresh = onRefresh, onCancel = onCancel)
+                }
+
+                is UiState.FastMode -> {
+                    item { FastModeCard(state.progress) }
+                    state.progress.result?.let { result ->
+                        item {
+                            SourceTabs(
+                                request = request,
+                                result = result,
+                                onResolve = onResolve,
+                                onDownload = onDownload,
+                                onPickDownloadedFile = openDownloadedFilePicker,
+                                onUseInstalledApp = onUseInstalledApp,
+                                onVersionHistory = onVersionHistory,
+                                onDownloadVersion = onDownloadVersion,
+                                onRefresh = onRefresh,
+                                onCancel = onCancel,
+                                installedPackageRefreshToken = installedPackageRefreshToken
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -3211,6 +3294,64 @@ private fun CheckingPickedFileState(state: UiState.CheckingPickedFile) {
 }
 
 @Composable
+private fun FastModeCard(progress: FastModeProgress) {
+    HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(HelperDefaults.ContentPadding),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text("Fast Mode", fontWeight = FontWeight.Bold)
+                    progress.sourceLabel?.let { source ->
+                        Text(
+                            text = source,
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
+                if (!progress.done && progress.percent == null) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.5.dp
+                    )
+                }
+            }
+            Text(
+                text = progress.detail,
+                color = when {
+                    progress.done && !progress.succeeded -> MaterialTheme.colorScheme.error
+                    progress.done -> MaterialTheme.colorScheme.onSurface
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (progress.percent != null && !progress.done) {
+                LinearProgressIndicator(
+                    progress = { progress.percent / 100f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    text = "${progress.percent}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun DownloadingState(state: UiState.Downloading, onCancel: () -> Unit) {
     HelperCard {
         Column(
@@ -3798,7 +3939,18 @@ private sealed interface UiState {
     data class CheckingPickedFile(val candidate: DownloadCandidate) : UiState
     data class Downloading(val candidate: DownloadCandidate, val percent: Int) : UiState
     data class Error(val message: String) : UiState
+    data class FastMode(val progress: FastModeProgress) : UiState
 }
+
+private data class FastModeProgress(
+    val sourceLabel: String? = null,
+    val detail: String = "Starting…",
+    val percent: Int? = null,
+    val done: Boolean = false,
+    val succeeded: Boolean = false,
+    // Present once Fast Mode finishes so the regular source list stays reachable.
+    val result: CandidateResult? = null
+)
 
 internal object DownloadHelperContract {
     const val ACTION_DOWNLOAD_ORIGINAL_APK = "app.morphe.manager.action.DOWNLOAD_ORIGINAL_APK"
