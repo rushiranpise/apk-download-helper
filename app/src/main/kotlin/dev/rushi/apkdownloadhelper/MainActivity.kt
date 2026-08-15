@@ -58,6 +58,7 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.OpenInBrowser
+import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
@@ -147,6 +148,12 @@ internal val DOWNLOAD_FILE_KIND_SET = DOWNLOAD_FILE_KIND_ORDER.toSet()
 internal val SPLIT_ARCHIVE_FILE_KINDS = setOf("apkm", "apks", "xapk")
 internal val DOWNLOAD_FILE_KIND_REGEX = Regex("""apkm|apks|xapk|apk""", RegexOption.IGNORE_CASE)
 internal val gson = Gson()
+
+// Morphe Manager installs to test against: release first, debug as fallback.
+private val MORPHE_MANAGER_PACKAGES = listOf(
+    "app.morphe.manager",
+    "app.morphe.manager.debug"
+)
 
 private val APK_PICKER_MIME_TYPES = arrayOf(
     "application/vnd.android.package-archive",
@@ -267,7 +274,8 @@ class MainActivity : ComponentActivity() {
                         setResult(Activity.RESULT_CANCELED)
                         finish()
                     },
-                    onCancelDownload = ::cancelDownload
+                    onCancelDownload = ::cancelDownload,
+                    onOpenMorphe = ::openMorpheManager
                 )
             }
         }
@@ -766,6 +774,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openMorpheManager() {
+        // Prefer the release build of Morphe Manager, then the debug build.
+        val launchIntent = MORPHE_MANAGER_PACKAGES
+            .asSequence()
+            .mapNotNull { packageName -> packageManager.getLaunchIntentForPackage(packageName) }
+            .firstOrNull()
+        if (launchIntent != null) {
+            appendLog("Opening Morphe Manager (${launchIntent.component?.packageName ?: "Morphe Manager"}).")
+            runCatching {
+                startActivity(launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.onFailure {
+                appendLog("Could not open Morphe Manager.", LogLevel.Error)
+            }
+        } else {
+            appendLog("Morphe Manager is not installed.", LogLevel.Warning)
+        }
+    }
+
     private fun handleDownloadEvent(event: DownloadJobManager.Event?) {
         when (event) {
             null -> Unit
@@ -1230,7 +1256,8 @@ private fun HelperScreen(
     onClearHistory: () -> Unit,
     onClearLogs: () -> Unit,
     onCancel: () -> Unit,
-    onCancelDownload: () -> Unit
+    onCancelDownload: () -> Unit,
+    onOpenMorphe: () -> Unit
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var pendingFilePick by remember { mutableStateOf<DownloadCandidate?>(null) }
@@ -1322,7 +1349,7 @@ private fun HelperScreen(
             }
 
             if (request == null) {
-                item { EmptyLaunchState() }
+                item { EmptyLaunchState(onOpenMorphe) }
                 return@LazyColumn
             }
 
@@ -1901,8 +1928,16 @@ private fun SettingSwitchRow(
 }
 
 @Composable
-private fun EmptyLaunchState() {
-    InfoCard("Open this helper from Morphe Manager when it asks for an original APK.")
+private fun EmptyLaunchState(onOpenMorphe: () -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)) {
+        InfoCard("Open this helper from Morphe Manager when it asks for an original APK.")
+        HelperButton(
+            text = "Open Morphe Manager",
+            onClick = onOpenMorphe,
+            icon = Icons.Outlined.OpenInNew,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
 }
 
 @Composable
