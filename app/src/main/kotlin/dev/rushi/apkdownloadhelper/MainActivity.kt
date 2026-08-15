@@ -3550,13 +3550,16 @@ private fun CandidateCard(
             context.isPackageInstalled(candidate.packageName)
         }
 
-    // A plain web link whose only content is the Open link action (e.g. the
-    // Play/Aurora latest listing) renders as a bare outlined button to match
-    // the idle action buttons instead of a filled card around a single button.
+    // A plain web link whose only content is the Open link action (manual-mode
+    // rows, and info-less Play/Aurora listings) renders as a bare outlined
+    // button to match the idle action buttons instead of a filled card around
+    // a single button.
     val bareLink = candidate.note == null &&
         !hasResolvedCandidateInfo &&
         !candidate.directDownload &&
-        (candidate.source == DownloadSource.AURORA || candidate.source == DownloadSource.PLAY)
+        (candidate.option == CandidateOption.MANUAL ||
+            candidate.source == DownloadSource.AURORA ||
+            candidate.source == DownloadSource.PLAY)
 
     val body: @Composable ColumnScope.() -> Unit = {
         if (candidate.option != CandidateOption.MANUAL && hasResolvedCandidateInfo) {
