@@ -31,6 +31,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -63,7 +64,9 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.BugReport
 import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.OpenInBrowser
@@ -71,7 +74,11 @@ import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.RadioButtonChecked
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
@@ -96,12 +103,14 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -109,9 +118,11 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.lifecycleScope
 import com.aurora.gplayapi.data.models.App
@@ -1841,6 +1852,7 @@ private fun HelperScreen(
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var pendingFilePick by remember { mutableStateOf<DownloadCandidate?>(null) }
+    var primaryAction by remember { mutableStateOf<PrimaryAction?>(null) }
     val context = LocalContext.current
     var historyEntries by remember { mutableStateOf<List<DownloadHistoryEntry>>(emptyList()) }
     val refreshHistory = {
@@ -1857,6 +1869,12 @@ private fun HelperScreen(
     }
     BackHandler(enabled = showSettings) {
         showSettings = false
+    }
+
+    val flowVisible = request != null &&
+        (state is UiState.Ready || (state is UiState.FastMode && state.progress.result != null))
+    LaunchedEffect(flowVisible) {
+        if (!flowVisible) primaryAction = null
     }
 
     Surface(
@@ -1882,10 +1900,12 @@ private fun HelperScreen(
             return@Surface
         }
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
+        Column(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(horizontal = HelperDefaults.ContentPadding, vertical = HelperDefaults.ContentPadding),
             verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
@@ -1957,7 +1977,7 @@ private fun HelperScreen(
 
                 is UiState.Ready -> {
                     item {
-                        SourceTabs(
+                        SourcePickerFlow(
                             request = request,
                             result = state.result,
                             onResolve = onResolve,
@@ -1969,7 +1989,8 @@ private fun HelperScreen(
                             onDownloadVersion = onDownloadVersion,
                             onRefresh = onRefresh,
                             onCancel = onCancel,
-                            installedPackageRefreshToken = installedPackageRefreshToken
+                            installedPackageRefreshToken = installedPackageRefreshToken,
+                            onPrimaryActionChanged = { primaryAction = it }
                         )
                     }
                 }
@@ -1991,7 +2012,7 @@ private fun HelperScreen(
                     }
                     state.progress.result?.let { result ->
                         item {
-                            SourceTabs(
+                            SourcePickerFlow(
                                 request = request,
                                 result = result,
                                 onResolve = onResolve,
@@ -2003,12 +2024,18 @@ private fun HelperScreen(
                                 onDownloadVersion = onDownloadVersion,
                                 onRefresh = onRefresh,
                                 onCancel = onCancel,
-                                installedPackageRefreshToken = installedPackageRefreshToken
+                                installedPackageRefreshToken = installedPackageRefreshToken,
+                                onPrimaryActionChanged = { primaryAction = it }
                             )
                         }
                     }
                 }
             }
+        }
+        val action = primaryAction
+        if (action != null) {
+            SourceBottomBar(action = action, onRefresh = onRefresh, onCancel = onCancel)
+        }
         }
     }
 }
@@ -2689,35 +2716,50 @@ private fun AppInfoHeader(
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = request.packageName,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f, fill = false)
-                )
-                Text(
-                    text = if (copied) "Copied" else "Copy",
-                    color = if (copied) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .clickable {
-                            clipboard?.setPrimaryClip(
-                                ClipData.newPlainText("package", request.packageName)
-                            )
-                            copied = true
-                        }
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                )
+                ) {
+                    Text(
+                        text = request.packageName,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
+                    )
+                    Text(
+                        text = if (copied) "Copied" else "Copy",
+                        color = if (copied) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable {
+                                clipboard?.setPrimaryClip(
+                                    ClipData.newPlainText("package", request.packageName)
+                                )
+                                copied = true
+                            }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    HelperChip(text = request.requestedVersionName?.let { "v$it" } ?: "any version")
+                    request.versionCodeSummary?.let { HelperChip(text = "build $it") }
+                    request.requestedFormatLabel.takeIf { it.isNotBlank() }?.let {
+                        HelperChip(text = it)
+                    }
+                    if (request.availableAbis.isNotEmpty()) {
+                        HelperChip(text = request.abiSummary)
+                    }
+                }
             }
-        }
 
         Icon(
             imageVector = if (expanded) {
@@ -2834,8 +2876,16 @@ private fun LoadingState() {
     }
 }
 
+private data class PrimaryAction(
+    val label: String,
+    val icon: ImageVector,
+    val enabled: Boolean = true,
+    val loading: Boolean = false,
+    val run: () -> Unit
+)
+
 @Composable
-private fun SourceTabs(
+private fun SourcePickerFlow(
     request: HelperRequest,
     result: CandidateResult,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
@@ -2847,17 +2897,72 @@ private fun SourceTabs(
     onDownloadVersion: (DownloadCandidate) -> Unit,
     onRefresh: () -> Unit,
     onCancel: () -> Unit,
-    installedPackageRefreshToken: Int
+    installedPackageRefreshToken: Int,
+    onPrimaryActionChanged: (PrimaryAction?) -> Unit
 ) {
     val groups = result.sourceGroups
 
     val pagerState = rememberPagerState(initialPage = 0) { groups.size }
     val scope = rememberCoroutineScope()
+    var showHowItWorks by remember { mutableStateOf(false) }
+    // Version type per source, so switching sources keeps the chosen mode.
+    var subTabBySource by remember { mutableStateOf<Map<DownloadSource, SourceSubTab>>(emptyMap()) }
+
+    val currentGroup = groups[pagerState.currentPage]
+    val currentSubTab = subTabBySource[currentGroup.source]
+        ?: defaultSubTab(currentGroup, request)
+
+    val uriHandler = LocalUriHandler.current
+    val context = LocalContext.current
+    val openCandidateLink: (DownloadCandidate) -> Unit = { candidate ->
+        if (candidate.source == DownloadSource.PLAY) {
+            context.openPlayStoreListing(candidate.packageName, candidate.url)
+        } else {
+            uriHandler.openUri(candidate.url)
+        }
+    }
+
+    val action = remember(currentGroup, currentSubTab) {
+        buildPrimaryAction(
+            group = currentGroup,
+            tab = currentSubTab,
+            onResolve = onResolve,
+            onDownload = onDownload,
+            onVersionHistory = onVersionHistory,
+            openLink = openCandidateLink
+        )
+    }
+    SideEffect { onPrimaryActionChanged(action) }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SectionTitle("Sources")
-            SourceSelector(
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SectionTitle("Download source")
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "How it works",
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable { showHowItWorks = !showHowItWorks }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+            }
+            if (showHowItWorks) {
+                InfoCard(
+                    "Pick a source, then a version type. The helper finds the version, " +
+                        "downloads it, validates it against Morphe's request, and returns it. " +
+                        "If a source gates the file behind a captcha, tap \"Solve captcha in app\" " +
+                        "— a real browser opens and any download it produces is captured back."
+                )
+            }
+            SourceGrid(
                 groups = groups,
                 selectedIndex = pagerState.currentPage,
                 onSelect = { index ->
@@ -2875,39 +2980,26 @@ private fun SourceTabs(
             )
         }
 
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SectionTitle("Commands")
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
-            ) {
-                HelperOutlinedButton(
-                    text = "Refresh",
-                    onClick = onRefresh,
-                    icon = Icons.Outlined.Refresh,
-                    modifier = Modifier.weight(1f)
-                )
-                HelperOutlinedButton(
-                    text = "Cancel",
-                    onClick = onCancel,
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
+        SelectedSourceBar(source = currentGroup.source)
 
         HorizontalPager(
             state = pagerState,
             key = { index -> groups[index].source },
             // Only compose the current page so the pager's height matches the page on
             // screen instead of the tallest neighbor (which left dead space on short
-            // pages). Pages are top-aligned so content never floats away from the pills.
+            // pages). Pages are top-aligned so content never floats away from the cards.
             beyondViewportPageCount = 0,
             verticalAlignment = Alignment.Top,
             modifier = Modifier.fillMaxWidth()
         ) { page ->
+            val group = groups[page]
             SourcePageContent(
                 request = request,
-                group = groups[page],
+                group = group,
+                selectedTab = subTabBySource[group.source] ?: defaultSubTab(group, request),
+                onSelectTab = { tab ->
+                    subTabBySource = subTabBySource + (group.source to tab)
+                },
                 onResolve = onResolve,
                 onDownload = onDownload,
                 onPickDownloadedFile = onPickDownloadedFile,
@@ -2921,11 +3013,467 @@ private fun SourceTabs(
     }
 }
 
-private enum class SourceSubTab(val label: String) {
-    Manual("Manual"),
-    Recommended("Recommended"),
-    Latest("Latest"),
-    History("History")
+private fun subTabsFor(group: SourceCandidateGroup, request: HelperRequest): List<SourceSubTab> =
+    buildList {
+        if (group.manual.isNotEmpty()) add(SourceSubTab.Manual)
+        if (request.hasKnownVersionRequest && group.source.supportsRecommended) {
+            add(SourceSubTab.Recommended)
+        }
+        add(SourceSubTab.Latest)
+        if (group.source.supportsHistory) {
+            add(SourceSubTab.History)
+        }
+    }
+
+private fun defaultSubTab(group: SourceCandidateGroup, request: HelperRequest): SourceSubTab =
+    subTabsFor(group, request).firstOrNull() ?: SourceSubTab.Latest
+
+private fun buildPrimaryAction(
+    group: SourceCandidateGroup,
+    tab: SourceSubTab,
+    onResolve: (DownloadSource, CandidateOption) -> Unit,
+    onDownload: (DownloadCandidate) -> Unit,
+    onVersionHistory: (DownloadSource) -> Unit,
+    openLink: (DownloadCandidate) -> Unit
+): PrimaryAction = when (tab) {
+    SourceSubTab.Manual -> {
+        val first = group.manual.firstOrNull()
+        PrimaryAction(
+            label = if (first == null) "No manual link" else "Open source site",
+            icon = Icons.Outlined.OpenInBrowser,
+            enabled = first != null,
+            run = { first?.let(openLink) }
+        )
+    }
+
+    SourceSubTab.Recommended,
+    SourceSubTab.Latest -> {
+        val isLatest = tab == SourceSubTab.Latest
+        val state = if (isLatest) group.latest else group.recommended
+        val option = if (isLatest) CandidateOption.LATEST else CandidateOption.REQUESTED
+        val resolveLabel = if (isLatest) "Find latest version" else "Find requested version"
+        when (state) {
+            ResolveState.Loading -> PrimaryAction(
+                label = if (isLatest) "Checking latest..." else "Checking requested version...",
+                icon = Icons.Outlined.Search,
+                enabled = false,
+                loading = true,
+                run = {}
+            )
+            is ResolveState.Done -> {
+                val direct = state.candidates.firstOrNull { it.directDownload }
+                if (direct != null) {
+                    PrimaryAction(
+                        label = "Download ${direct.versionDisplay}",
+                        icon = Icons.Outlined.Download,
+                        run = { onDownload(direct) }
+                    )
+                } else {
+                    PrimaryAction(
+                        label = resolveLabel,
+                        icon = Icons.Outlined.Search,
+                        run = { onResolve(group.source, option) }
+                    )
+                }
+            }
+            else -> PrimaryAction(
+                label = resolveLabel,
+                icon = Icons.Outlined.Search,
+                run = { onResolve(group.source, option) }
+            )
+        }
+    }
+
+    SourceSubTab.History -> when (group.history) {
+        VersionHistoryState.Idle -> PrimaryAction(
+            label = "Load versions",
+            icon = Icons.Outlined.History,
+            run = { onVersionHistory(group.source) }
+        )
+        VersionHistoryState.Loading -> PrimaryAction(
+            label = "Loading versions...",
+            icon = Icons.Outlined.History,
+            enabled = false,
+            loading = true,
+            run = {}
+        )
+        else -> PrimaryAction(
+            label = "Reload versions",
+            icon = Icons.Outlined.Refresh,
+            run = { onVersionHistory(group.source) }
+        )
+    }
+}
+
+private val sourceCategories: List<Pair<String, List<DownloadSource>>> = listOf(
+    "Official" to listOf(DownloadSource.PLAY),
+    "Trusted mirrors" to listOf(
+        DownloadSource.APK_MIRROR,
+        DownloadSource.UPTODOWN,
+        DownloadSource.APK_PURE,
+        DownloadSource.APK_COMBO
+    ),
+    "Other sources" to listOf(
+        DownloadSource.APTOIDE,
+        DownloadSource.EVOZI,
+        DownloadSource.MI9,
+        DownloadSource.APK_DOWNLOADER,
+        DownloadSource.AURORA
+    )
+)
+
+@Composable
+private fun SourceGrid(
+    groups: List<SourceCandidateGroup>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        sourceCategories.forEach { (title, sources) ->
+            val catGroups = sources.mapNotNull { source ->
+                groups.firstOrNull { it.source == source }
+            }
+            if (catGroups.isEmpty()) return@forEach
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SectionTitle(title)
+                catGroups.chunked(2).forEach { rowGroups ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        rowGroups.forEach { group ->
+                            val index = groups.indexOfFirst { it.source == group.source }
+                            SourceCard(
+                                group = group,
+                                selected = index == selectedIndex,
+                                onClick = { onSelect(index) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        if (rowGroups.size == 1) {
+                            Spacer(Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private const val SourceCardFill = 0xFF1C1E22
+private const val SourceCardBorder = 0xFF2A2D33
+private const val VerifiedGreen = 0xFF34A853
+
+@Composable
+private fun SourceCard(
+    group: SourceCandidateGroup,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val brand = group.source.brand()
+    val latestName = (group.latest as? ResolveState.Done)
+        ?.candidates?.firstOrNull()?.versionName
+    val subtitle = when {
+        group.source == DownloadSource.PLAY -> brand.descriptor
+        latestName != null -> "Latest: $latestName"
+        else -> brand.descriptor
+    }
+    val confirmed = group.source == DownloadSource.PLAY ||
+        (group.latest as? ResolveState.Done)?.candidates?.isNotEmpty() == true ||
+        (group.recommended as? ResolveState.Done)?.candidates?.isNotEmpty() == true
+
+    val shape = RoundedCornerShape(16.dp)
+    Surface(
+        modifier = modifier
+            .clip(shape)
+            .clickable(onClick = onClick),
+        shape = shape,
+        color = Color(SourceCardFill),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) Color(VerifiedGreen).copy(alpha = 0.6f) else Color(SourceCardBorder)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SourceAvatar(source = group.source)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = group.source.label,
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (confirmed) {
+                        Icon(
+                            imageVector = Icons.Outlined.CheckCircle,
+                            contentDescription = "Available",
+                            tint = Color(VerifiedGreen),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+                Text(
+                    text = subtitle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            RadioDot(selected = selected)
+        }
+    }
+}
+
+private data class SourceBrand(
+    val color: Color,
+    val glyph: String? = null,
+    val icon: ImageVector? = null,
+    val playTriangle: Boolean = false,
+    val descriptor: String
+)
+
+private fun DownloadSource.brand(): SourceBrand = when (this) {
+    DownloadSource.PLAY -> SourceBrand(
+        color = Color(0xFF00C853),
+        playTriangle = true,
+        descriptor = "Official by Google"
+    )
+    DownloadSource.APK_MIRROR -> SourceBrand(Color(0xFFFF6D00), glyph = "AM", descriptor = "Trusted mirror")
+    DownloadSource.APK_PURE -> SourceBrand(Color(0xFF1E9E4E), glyph = "A", descriptor = "Trusted mirror")
+    DownloadSource.APK_COMBO -> SourceBrand(Color(0xFF2E7D32), icon = Icons.Outlined.BugReport, descriptor = "Trusted mirror")
+    DownloadSource.UPTODOWN -> SourceBrand(Color(0xFF1E88E5), icon = Icons.Outlined.FileDownload, descriptor = "Trusted mirror")
+    DownloadSource.AURORA -> SourceBrand(Color(0xFF7C4DFF), glyph = "A", descriptor = "Play Store client")
+    DownloadSource.APTOIDE -> SourceBrand(Color(0xFFFF5722), glyph = "A", descriptor = "Community store")
+    DownloadSource.EVOZI -> SourceBrand(Color(0xFF455A64), glyph = "E", descriptor = "Direct APK search")
+    DownloadSource.MI9 -> SourceBrand(Color(0xFF1565C0), glyph = "Mi9", descriptor = "Direct APK search")
+    DownloadSource.APK_DOWNLOADER -> SourceBrand(Color(0xFF00838F), glyph = "D", descriptor = "Direct APK search")
+}
+
+@Composable
+private fun SourceAvatar(source: DownloadSource, size: Dp = 40.dp) {
+    val brand = source.brand()
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(12.dp))
+            .background(brand.color),
+        contentAlignment = Alignment.Center
+    ) {
+        when {
+            brand.playTriangle -> PlayTriangleIcon(
+                tint = Color.White,
+                modifier = Modifier.size(size * 0.5f)
+            )
+            brand.icon != null -> Icon(
+                imageVector = brand.icon,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(size * 0.5f)
+            )
+            else -> Text(
+                text = brand.glyph.orEmpty(),
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = if (brand.glyph.orEmpty().length > 1) 11.sp else 16.sp,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+private fun PlayTriangleIcon(tint: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val path = Path().apply {
+            moveTo(w * 0.30f, h * 0.16f)
+            lineTo(w * 0.30f, h * 0.84f)
+            lineTo(w * 0.86f, h * 0.5f)
+            close()
+        }
+        drawPath(path = path, color = tint)
+    }
+}
+
+@Composable
+private fun RadioDot(selected: Boolean) {
+    Icon(
+        imageVector = if (selected) {
+            Icons.Outlined.RadioButtonChecked
+        } else {
+            Icons.Outlined.RadioButtonUnchecked
+        },
+        contentDescription = if (selected) "Selected" else null,
+        tint = if (selected) {
+            Color(VerifiedGreen)
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+        },
+        modifier = Modifier.size(18.dp)
+    )
+}
+
+@Composable
+private fun SelectedSourceBar(source: DownloadSource) {
+    val shape = RoundedCornerShape(16.dp)
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape),
+        shape = shape,
+        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SourceAvatar(source = source, size = 32.dp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(
+                    text = "Selected source",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall
+                )
+                Text(
+                    text = source.label,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                imageVector = Icons.Outlined.CheckCircle,
+                contentDescription = "Selected",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SourceBottomBar(
+    action: PrimaryAction,
+    onRefresh: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Column {
+        androidx.compose.material3.HorizontalDivider(
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(horizontal = HelperDefaults.ContentPadding, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SourceSquareButton(
+                icon = Icons.Outlined.Refresh,
+                contentDescription = "Refresh",
+                onClick = onRefresh
+            )
+            SourceSquareButton(
+                icon = Icons.Outlined.Close,
+                contentDescription = "Cancel",
+                onClick = onCancel
+            )
+            Button(
+                onClick = action.run,
+                enabled = action.enabled,
+                modifier = Modifier
+                    .weight(1f)
+                    .height(HelperDefaults.ButtonHeight),
+                shape = RoundedCornerShape(HelperDefaults.ButtonCornerRadius),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.28f),
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.48f)),
+                contentPadding = PaddingValues(horizontal = HelperDefaults.ContentPadding)
+            ) {
+                if (action.loading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = action.icon,
+                        contentDescription = null,
+                        modifier = Modifier.size(HelperDefaults.IconSizeSmall)
+                    )
+                    Spacer(Modifier.width(HelperDefaults.ContentPaddingSmall))
+                }
+                Text(action.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SourceSquareButton(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.size(HelperDefaults.ButtonHeight),
+        shape = RoundedCornerShape(HelperDefaults.ButtonCornerRadius),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
+        ),
+        border = BorderStroke(1.dp, primary.copy(alpha = 0.32f)),
+        contentPadding = PaddingValues(0.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            modifier = Modifier.size(HelperDefaults.IconSizeSmall)
+        )
+    }
+}
+
+private enum class SourceSubTab(
+    val label: String,
+    val subtitle: String,
+    val icon: ImageVector
+) {
+    Manual("Manual", "Choose version manually", Icons.Outlined.Tune),
+    Recommended("Recommended", "Requested version", Icons.Outlined.CheckCircle),
+    Latest("Latest", "Newest version", Icons.Outlined.Star),
+    History("History", "Browse previous versions", Icons.Outlined.History)
 }
 
 /** Sources that can resolve the exact requested version from their own data. */
@@ -2958,6 +3506,8 @@ private val DownloadSource.supportsHistory: Boolean
 private fun SourcePageContent(
     request: HelperRequest,
     group: SourceCandidateGroup,
+    selectedTab: SourceSubTab,
+    onSelectTab: (SourceSubTab) -> Unit,
     onResolve: (DownloadSource, CandidateOption) -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
     onPickDownloadedFile: (DownloadCandidate) -> Unit,
@@ -2967,33 +3517,21 @@ private fun SourcePageContent(
     onDownloadVersion: (DownloadCandidate) -> Unit,
     installedPackageRefreshToken: Int
 ) {
-    val subTabs = remember(group, request) {
-        buildList {
-            if (group.manual.isNotEmpty()) add(SourceSubTab.Manual)
-            if (request.hasKnownVersionRequest && group.source.supportsRecommended) {
-                add(SourceSubTab.Recommended)
-            }
-            add(SourceSubTab.Latest)
-            if (group.source.supportsHistory) {
-                add(SourceSubTab.History)
-            }
-        }
-    }
-    var selectedTab by rememberSaveable(group.source) {
-        mutableStateOf(subTabs.firstOrNull() ?: SourceSubTab.Latest)
-    }
+    val subTabs = remember(group, request) { subTabsFor(group, request) }
     val safeTab = subTabs.firstOrNull { it == selectedTab } ?: subTabs.firstOrNull()
         ?: SourceSubTab.Latest
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            SectionTitle("Variants")
-            SubTabRow(
+            SectionTitle("Version type")
+            VersionTypeRow(
                 tabs = subTabs,
                 selected = safeTab,
-                onSelect = { selectedTab = it }
+                onSelect = onSelectTab
             )
         }
+
+        AboutModeCard(tab = safeTab)
 
         when (safeTab) {
             SourceSubTab.Manual -> {
@@ -3085,26 +3623,159 @@ private fun SourcePageContent(
 }
 
 @Composable
-private fun SubTabRow(
+private fun VersionTypeRow(
     tabs: List<SourceSubTab>,
     selected: SourceSubTab,
     onSelect: (SourceSubTab) -> Unit
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         tabs.forEach { tab ->
-            SourcePill(
-                text = tab.label,
+            VersionTypeCard(
+                tab = tab,
                 selected = tab == selected,
                 onClick = { onSelect(tab) },
-                modifier = Modifier.weight(1f),
-                height = 36.dp,
-                minWidth = 0.dp,
-                textStyle = MaterialTheme.typography.labelMedium,
-                textHorizontalPadding = 8.dp
+                modifier = Modifier.weight(1f)
             )
+        }
+    }
+}
+
+@Composable
+private fun VersionTypeCard(
+    tab: SourceSubTab,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(16.dp)
+    Surface(
+        modifier = modifier
+            .clip(shape)
+            .clickable(onClick = onClick),
+        shape = shape,
+        color = if (selected) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+        } else {
+            Color(SourceCardFill)
+        },
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = BorderStroke(
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                Color(SourceCardBorder)
+            }
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 6.dp, vertical = 12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(
+                imageVector = tab.icon,
+                contentDescription = null,
+                tint = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.size(20.dp)
+            )
+            Text(
+                text = tab.label,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+            Text(
+                text = tab.subtitle,
+                color = if (selected) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutModeCard(tab: SourceSubTab) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val title = when (tab) {
+        SourceSubTab.Manual -> "About manual mode"
+        SourceSubTab.Recommended -> "About recommended mode"
+        SourceSubTab.Latest -> "About latest mode"
+        SourceSubTab.History -> "About version history"
+    }
+    val description = when (tab) {
+        SourceSubTab.Manual ->
+            "Opens the source's website so you can download the file yourself, " +
+                "then select it to return it to Morphe."
+        SourceSubTab.Recommended ->
+            "Finds the exact version Morphe requested from the selected source " +
+                "and downloads it."
+        SourceSubTab.Latest ->
+            "Finds the newest compatible version from the selected source and downloads it."
+        SourceSubTab.History ->
+            "Lists every version this source offers — pick any of them and download it."
+    }
+    HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(HelperDefaults.CompactCornerRadius))
+                    .clickable { expanded = !expanded }
+                    .padding(horizontal = HelperDefaults.ContentPadding, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = title,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = if (expanded) {
+                        Icons.Outlined.ExpandLess
+                    } else {
+                        Icons.Outlined.ExpandMore
+                    },
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (expanded) {
+                androidx.compose.material3.HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                )
+                Text(
+                    text = description,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(
+                        horizontal = HelperDefaults.ContentPadding,
+                        vertical = 14.dp
+                    )
+                )
+            }
         }
     }
 }
@@ -3332,77 +4003,7 @@ private fun CandidateResolveSection(
     }
 }
 
-@Composable
-private fun SourceSelector(
-    groups: List<SourceCandidateGroup>,
-    selectedIndex: Int,
-    onSelect: (Int) -> Unit
-) {
-    // Split the sources into two balanced rows; pills stretch to fill each row end to end.
-    val firstRowCount = (groups.size + 1) / 2
-    Column(verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)) {
-        var globalIndex = 0
-        groups.chunked(firstRowCount).forEach { rowGroups ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
-            ) {
-                rowGroups.forEach { group ->
-                    val index = globalIndex++
-                    SourcePill(
-                        text = group.source.label,
-                        selected = index == selectedIndex,
-                        onClick = { onSelect(index) },
-                        modifier = Modifier.weight(1f),
-                        minWidth = 0.dp,
-                        textStyle = MaterialTheme.typography.labelMedium,
-                        textHorizontalPadding = 8.dp
-                    )
-                }
-            }
-        }
-    }
-}
 
-@Composable
-private fun SourcePill(
-    text: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-    height: Dp = 44.dp,
-    minWidth: Dp = 92.dp,
-    textStyle: TextStyle = MaterialTheme.typography.labelLarge,
-    textHorizontalPadding: Dp = HelperDefaults.ContentPadding
-) {
-    val shape = RoundedCornerShape(50)
-    val colors = MaterialTheme.colorScheme
-    Surface(
-        modifier = modifier
-            .height(height)
-            .widthIn(min = minWidth)
-            .clip(shape)
-            .clickable(onClick = onClick),
-        shape = shape,
-        color = if (selected) colors.primary else colors.surfaceColorAtElevation(3.dp),
-        contentColor = if (selected) colors.onPrimary else colors.onSurfaceVariant,
-        border = BorderStroke(
-            1.dp,
-            if (selected) colors.primary else colors.outlineVariant.copy(alpha = 0.55f)
-        )
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Text(
-                text = text,
-                style = textStyle,
-                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = textHorizontalPadding)
-            )
-        }
-    }
-}
 
 @Composable
 private fun InfoCard(text: String) {
