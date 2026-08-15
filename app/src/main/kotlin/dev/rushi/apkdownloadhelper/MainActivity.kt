@@ -156,8 +156,8 @@ private val MORPHE_MANAGER_PACKAGES = listOf(
 )
 
 // Where to point the user when Morphe Manager is not installed at all.
-private const val MORPHE_MANAGER_RELEASES_URL =
-    "https://github.com/rushiranpise/morphe-manager/releases"
+private const val MORPHE_MANAGER_SITE_URL =
+    "https://morphe.software/"
 
 private val APK_PICKER_MIME_TYPES = arrayOf(
     "application/vnd.android.package-archive",
@@ -792,10 +792,10 @@ class MainActivity : ComponentActivity() {
                 appendLog("Could not open Morphe Manager.", LogLevel.Error)
             }
         } else {
-            appendLog("Morphe Manager is not installed — opening its GitHub releases page.", LogLevel.Warning)
+            appendLog("Morphe Manager is not installed — opening morphe.software.", LogLevel.Warning)
             val releases = Intent(
                 Intent.ACTION_VIEW,
-                Uri.parse(MORPHE_MANAGER_RELEASES_URL)
+                Uri.parse(MORPHE_MANAGER_SITE_URL)
             ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
             runCatching { startActivity(releases) }
                 .onFailure {
