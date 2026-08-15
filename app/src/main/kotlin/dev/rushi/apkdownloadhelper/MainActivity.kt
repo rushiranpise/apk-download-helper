@@ -3577,11 +3577,16 @@ private fun CandidateCard(
                 modifier = Modifier.fillMaxWidth()
             )
         } else {
-            // Every source except Aurora and Play can fall back to the in-app
-            // captcha browser: it opens the candidate's page in a real WebView
-            // (passing any Cloudflare challenge) and captures the download URL
-            // the page produces.
-            if (candidate.source != DownloadSource.AURORA && candidate.source != DownloadSource.PLAY) {
+            // Resolved candidates (Recommended/Latest/History) from every source
+            // except Aurora and Play can fall back to the in-app captcha
+            // browser: it opens the candidate's page in a real WebView (passing
+            // any Cloudflare challenge) and captures the download URL the page
+            // produces. Manual-mode links stay plain open-link rows — their job
+            // is the external "select downloaded file" flow.
+            if (candidate.option != CandidateOption.MANUAL &&
+                candidate.source != DownloadSource.AURORA &&
+                candidate.source != DownloadSource.PLAY
+            ) {
                 HelperButton(
                     text = "Solve captcha in app",
                     onClick = { onSolveCaptcha(candidate) },
