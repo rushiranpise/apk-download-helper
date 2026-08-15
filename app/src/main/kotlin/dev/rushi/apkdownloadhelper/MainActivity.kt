@@ -228,6 +228,9 @@ class MainActivity : ComponentActivity() {
             ApkPureParser(parserContext),
             ApkComboParser(parserContext),
             AptoideParser(parserContext),
+            EvoziParser(parserContext),
+            Mi9Parser(),
+            ApkDownloaderPagesParser(),
             AuroraParser(parserContext)
         ).associateBy { it.source }
     }
@@ -838,7 +841,7 @@ class MainActivity : ComponentActivity() {
         if (fastModeActive) return
         fastModeActive = true
         fastModeQueue = DownloadSource.entries
-            .filter { it != DownloadSource.AURORA && it != DownloadSource.PLAY }
+            .filter { it !in NON_FAST_MODE_SOURCES }
             .toMutableList()
         appendLog("Fast Mode: auto-searching sources for the exact requested version.", LogLevel.Info)
         uiState = UiState.FastMode(FastModeProgress(detail = "Auto-searching sources…"))
@@ -3827,6 +3830,9 @@ internal data class HelperRequest(
             DownloadSource.APTOIDE -> listOf("aptoide.com")
             DownloadSource.APK_PURE -> listOf("apkpure.com")
             DownloadSource.UPTODOWN -> listOf("uptodown.com")
+            DownloadSource.EVOZI -> listOf("apkcube.com", "evozi.com")
+            DownloadSource.MI9 -> listOf("mi9.com")
+            DownloadSource.APK_DOWNLOADER -> listOf("apkdownloader.pages.dev")
         }
 
         return (sourceHintUrls + fallbackWebUrl).distinct().filter { url ->
@@ -4162,8 +4168,11 @@ internal enum class DownloadSource(
     APK_PURE("APKPure", 2),
     APK_COMBO("APKCombo", 3),
     APTOIDE("Aptoide", 4),
-    AURORA("Aurora", 5, supportsManualArtifactPicker = false),
-    PLAY("Play", 6, supportsManualArtifactPicker = false)
+    EVOZI("Evozi", 5),
+    MI9("Mi9", 6),
+    APK_DOWNLOADER("APK Downloader", 7),
+    AURORA("Aurora", 8, supportsManualArtifactPicker = false),
+    PLAY("Play", 9, supportsManualArtifactPicker = false)
 }
 
 private fun DownloadSource.searchDomain(): String? = when (this) {
@@ -4172,6 +4181,9 @@ private fun DownloadSource.searchDomain(): String? = when (this) {
     DownloadSource.APK_PURE -> "apkpure.com"
     DownloadSource.APK_COMBO -> "apkcombo.com"
     DownloadSource.APTOIDE -> "aptoide.com"
+    DownloadSource.EVOZI -> "apkcube.com"
+    DownloadSource.MI9 -> "mi9.com"
+    DownloadSource.APK_DOWNLOADER -> "apkdownloader.pages.dev"
     DownloadSource.PLAY -> "play.google.com"
     DownloadSource.AURORA -> null
 }
@@ -4225,6 +4237,16 @@ private sealed interface UiState {
 }
 
 private enum class FastModeChoice { USE, NEXT }
+
+// Sources Fast Mode skips: they never offer direct downloads (Aurora/Play
+// return installed/Play versions, the downloader services are captcha-gated).
+private val NON_FAST_MODE_SOURCES = setOf(
+    DownloadSource.AURORA,
+    DownloadSource.PLAY,
+    DownloadSource.EVOZI,
+    DownloadSource.MI9,
+    DownloadSource.APK_DOWNLOADER
+)
 
 private sealed interface FastModeFindResult {
     data class Exact(val candidate: DownloadCandidate) : FastModeFindResult
