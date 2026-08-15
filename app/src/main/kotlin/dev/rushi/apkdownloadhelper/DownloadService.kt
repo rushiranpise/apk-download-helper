@@ -86,6 +86,14 @@ internal object DownloadJobManager {
         data class Completed(val result: PendingDownloadResult) : Event
         data class Failed(val candidate: DownloadCandidate, val message: String) : Event
         data class Cancelled(val candidate: DownloadCandidate) : Event
+        // The downloaded file is valid except for its version code (which the
+        // parser could not know up front). The file is kept so the UI can ask
+        // whether to use it anyway.
+        data class ValidationMismatch(
+            val candidate: DownloadCandidate,
+            val file: File,
+            val foundVersionCode: Long?
+        ) : Event
     }
 
     @Volatile
@@ -239,6 +247,17 @@ internal class DownloadService : Service() {
             } catch (error: Throwable) {
                 if (error is CancellationException || error.message == "Canceled") {
                     handleCancelled(job)
+                } else if (error is VersionCodeMismatchException) {
+                    // Keep the file; the UI decides whether to use it anyway.
+                    DownloadJobManager.emit(
+                        DownloadJobManager.Event.ValidationMismatch(
+                            candidate = job.candidate,
+                            file = error.file,
+                            foundVersionCode = error.foundVersionCode
+                        )
+                    )
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
                 } else {
                     handleFailure(job, error)
                 }
@@ -553,6 +572,11 @@ internal fun Context.copyToDownloads(file: File): Uri {
     }
 }
 
+internal class VersionCodeMismatchException(
+    val file: File,
+    val foundVersionCode: Long?
+) : Exception("Version code: requested a different build, found $foundVersionCode")
+
 internal fun validateDownloadedArtifact(
     context: Context,
     request: HelperRequest,
@@ -568,7 +592,7 @@ internal fun validateDownloadedArtifact(
         }
         return
     }
-    val mismatches = buildList {
+    val hardMismatches = buildList {
         if (metadata.packageName != request.packageName) {
             add("Package: requested ${request.packageName}, found ${metadata.packageName}")
         }
@@ -584,25 +608,28 @@ internal fun validateDownloadedArtifact(
                         "found ${metadata.versionName ?: "unknown"}"
                 )
             }
-
-            val requestedCodes = request.requestedVersionCodes +
-                request.compatibleVersionCodes.filter { it > 0L }
-            if (
-                requestedCodes.isNotEmpty() &&
-                metadata.versionCode !in requestedCodes
-            ) {
-                add(
-                    "Version code: requested ${requestedCodes.joinToString()}, " +
-                        "found ${metadata.versionCode ?: "unknown"}"
-                )
-            }
         }
     }
 
-    check(mismatches.isEmpty()) {
+    // Wrong package or version name: the file is unusable — delete and fail.
+    check(hardMismatches.isEmpty()) {
         file.delete()
-        "Downloaded file does not match Morphe request.\n${mismatches.joinToString("\n")}"
+        "Downloaded file does not match Morphe request.\n${hardMismatches.joinToString("\n")}"
             .withManualModeHint()
+    }
+
+    // Version-code-only mismatch: the file is otherwise valid, but its build
+    // differs from the request. Keep the file so the caller (Fast Mode) can
+    // ask the user whether to use it anyway.
+    if (candidate.option == CandidateOption.REQUESTED) {
+        val requestedCodes = request.requestedVersionCodes +
+            request.compatibleVersionCodes.filter { it > 0L }
+        if (
+            requestedCodes.isNotEmpty() &&
+            metadata.versionCode !in requestedCodes
+        ) {
+            throw VersionCodeMismatchException(file, metadata.versionCode)
+        }
     }
 }
 

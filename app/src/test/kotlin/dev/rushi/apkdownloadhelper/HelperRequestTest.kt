@@ -47,6 +47,49 @@ class HelperRequestTest {
         assertTrue(request.acceptsFormat("APK/APKM/APKS/XAPK"))
     }
 
+    // ---- Fast Mode strict version matching (exact name AND code) ----
+
+    @Test
+    fun strictMatch_acceptsSameNameAndCode() {
+        val request = testRequest(versionName = "2.5.0.6", versionCode = 723)
+        assertTrue(request.matchesRequestedVersionStrict("2.5.0.6", 723))
+    }
+
+    @Test
+    fun strictMatch_rejectsNameMatchWithDifferentCode() {
+        // Battery Guru case: request wants build 723, source only has 721.
+        val request = testRequest(versionName = "2.5.0.6", versionCode = 723)
+        assertFalse(request.matchesRequestedVersionStrict("2.5.0.6", 721))
+        // ...even though the lenient matcher (used by the Recommended tab)
+        // still treats it as a name match.
+        assertTrue(request.matchesRequestedVersion("2.5.0.6", 721))
+    }
+
+    @Test
+    fun strictMatch_acceptsNameMatchWhenSourceDoesNotReportCode() {
+        val request = testRequest(versionName = "2.5.0.6", versionCode = 723)
+        assertTrue(request.matchesRequestedVersionStrict("2.5.0.6", null))
+    }
+
+    @Test
+    fun strictMatch_rejectsDifferentNameWithSameCode() {
+        val request = testRequest(versionName = "2.5.0.6", versionCode = 723)
+        assertFalse(request.matchesRequestedVersionStrict("2.5.1.0", 723))
+    }
+
+    @Test
+    fun strictMatch_nameOnlyRequestIgnoresCandidateCode() {
+        val request = testRequest(versionName = "2.5.0.6", versionCode = null)
+        assertTrue(request.matchesRequestedVersionStrict("2.5.0.6", 721))
+        assertTrue(request.matchesRequestedVersionStrict("2.5.0.6", 723))
+    }
+
+    @Test
+    fun strictMatch_rejectsWhenRequestHasNoVersionAtAll() {
+        val request = testRequest(versionName = null, versionCode = null)
+        assertFalse(request.matchesRequestedVersionStrict("2.5.0.6", 721))
+    }
+
     // ---- stale-result scoping (PendingDownloadResult.belongsTo) ----
 
     private fun pendingResult(

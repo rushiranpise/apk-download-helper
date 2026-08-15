@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ContentValues
 import android.content.Context
+import android.widget.Toast
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
@@ -50,6 +51,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Download
@@ -63,6 +65,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -124,6 +127,7 @@ import java.util.zip.ZipOutputStream
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.random.Random
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -238,6 +242,7 @@ class MainActivity : ComponentActivity() {
     private var pendingDownload: PendingDownload? = null
     private var fastModeActive = false
     private var fastModeQueue: MutableList<DownloadSource>? = null
+    private var fastModeDecision: CompletableDeferred<FastModeChoice?>? = null
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { _ -> startPendingDownload() }
@@ -282,6 +287,8 @@ class MainActivity : ComponentActivity() {
                     },
                     onCancelDownload = ::cancelDownload,
                     onCancelFastMode = ::cancelFastMode,
+                    onUseFastModeMismatch = { fastModeChoose(FastModeChoice.USE) },
+                    onSkipFastModeMismatch = { fastModeChoose(FastModeChoice.NEXT) },
                     onOpenMorphe = ::openMorpheManager
                 )
             }
@@ -844,6 +851,9 @@ class MainActivity : ComponentActivity() {
         appendLog("Fast Mode cancelled — taking over manually.", LogLevel.Warning)
         fastModeActive = false
         fastModeQueue = null
+        // Unblock a pending "use this version?" question so the loop exits.
+        fastModeDecision?.complete(null)
+        fastModeDecision = null
         // If a fast-mode download is in flight, stop it too; its Cancelled
         // event also restores the source list.
         if (DownloadJobManager.activeJob != null) {
@@ -857,6 +867,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun fastModeChoose(choice: FastModeChoice) {
+        fastModeDecision?.complete(choice)
+    }
+
     private suspend fun fastModeNext(request: HelperRequest) {
         val queue = fastModeQueue ?: return
         while (queue.isNotEmpty()) {
@@ -867,27 +881,72 @@ class MainActivity : ComponentActivity() {
             uiState = UiState.FastMode(
                 FastModeProgress(sourceLabel = source.label, detail = "Checking ${source.label}…")
             )
-            val candidate = withContext(Dispatchers.IO) {
-                runCatching { fastModeFindCandidate(request, source) }.getOrNull()
+            val result = withContext(Dispatchers.IO) {
+                runCatching { fastModeFindCandidate(request, source) }
+                    .getOrDefault(FastModeFindResult.None)
             }
             if (!fastModeActive) return
-            if (candidate != null) {
-                appendLog(
-                    "Fast Mode: found ${candidate.versionDisplay} on ${source.label} " +
-                        "(${candidate.fileKind.uppercase(Locale.US)}) — downloading.",
-                    LogLevel.Info
-                )
-                uiState = UiState.FastMode(
-                    FastModeProgress(
-                        sourceLabel = source.label,
-                        detail = "Found ${candidate.versionDisplay} — downloading…",
-                        percent = 0
+            when (result) {
+                is FastModeFindResult.Exact -> {
+                    val candidate = result.candidate
+                    appendLog(
+                        "Fast Mode: found ${candidate.versionDisplay} on ${source.label} " +
+                            "(${candidate.fileKind.uppercase(Locale.US)}) — downloading.",
+                        LogLevel.Info
                     )
-                )
-                downloadAndReturn(candidate)
-                return
+                    uiState = UiState.FastMode(
+                        FastModeProgress(
+                            sourceLabel = source.label,
+                            detail = "Found ${candidate.versionDisplay} — downloading…",
+                            percent = 0
+                        )
+                    )
+                    downloadAndReturn(candidate)
+                    return
+                }
+                is FastModeFindResult.VersionMismatch -> {
+                    val candidate = result.candidate
+                    appendLog(
+                        "Fast Mode: ${source.label} has ${candidate.versionDisplay} — " +
+                            "build differs from requested ${request.versionCodeSummary ?: "version"}. Asking the user.",
+                        LogLevel.Warning
+                    )
+                    val decisionGate = CompletableDeferred<FastModeChoice?>()
+                    fastModeDecision = decisionGate
+                    uiState = UiState.FastMode(
+                        FastModeProgress(
+                            sourceLabel = source.label,
+                            detail = "Version code mismatch",
+                            awaitingDecision = true,
+                            mismatchDetail = "Requested build ${request.versionCodeSummary ?: "?"} — " +
+                                "${source.label} has ${candidate.versionDisplay}."
+                        )
+                    )
+                    val decision = decisionGate.await()
+                    if (!fastModeActive || decision == null) return
+                    if (decision == FastModeChoice.USE) {
+                        appendLog(
+                            "Fast Mode: using ${candidate.versionDisplay} from ${source.label} " +
+                                "despite the code mismatch.",
+                            LogLevel.Info
+                        )
+                        uiState = UiState.FastMode(
+                            FastModeProgress(
+                                sourceLabel = source.label,
+                                detail = "Found ${candidate.versionDisplay} — downloading…",
+                                percent = 0
+                            )
+                        )
+                        downloadAndReturn(candidate)
+                        return
+                    }
+                    appendLog("Fast Mode: user skipped ${source.label} — trying the next source.", LogLevel.Info)
+                    continue
+                }
+                FastModeFindResult.None -> {
+                    appendLog("Fast Mode: no exact match on ${source.label}.", LogLevel.Info)
+                }
             }
-            appendLog("Fast Mode: no exact match on ${source.label}.", LogLevel.Info)
         }
         fastModeActive = false
         fastModeQueue = null
@@ -910,18 +969,33 @@ class MainActivity : ComponentActivity() {
     private suspend fun fastModeFindCandidate(
         request: HelperRequest,
         source: DownloadSource
-    ): DownloadCandidate? {
+    ): FastModeFindResult {
         val outcome = resolveSourceSection(request, source, CandidateOption.REQUESTED)
-        return outcome.candidates
-            .firstOrNull { candidate ->
-                // Format differences are fine; the version (and, when the source
-                // reports it, the version code) must match. The downloaded file's
-                // real version code is re-checked during validation, so a
-                // wrong-code download fails and Fast Mode advances to the next
-                // source.
-                candidate.directDownload &&
-                    request.matchesRequestedVersion(candidate.versionName, candidate.versionCode)
-            }
+        val exact = outcome.candidates.firstOrNull { candidate ->
+            // Format differences are fine, but the exact version name AND
+            // version code are both required. A candidate that reports a code
+            // outside the request is surfaced as a mismatch the user can
+            // accept or skip — never silently downloaded.
+            candidate.directDownload &&
+                request.matchesRequestedVersionStrict(candidate.versionName, candidate.versionCode)
+        }
+        if (exact != null) return FastModeFindResult.Exact(exact)
+
+        // The version name exists on this source but with a different build —
+        // hand it to the loop so it can ask the user before proceeding.
+        val mismatch = outcome.candidates.firstOrNull { candidate ->
+            candidate.directDownload &&
+                request.requestedVersionName != null &&
+                candidate.versionName != null &&
+                candidate.versionName.versionNameEquals(request.requestedVersionName) &&
+                candidate.versionCode != null &&
+                !request.matchesRequestedVersionStrict(candidate.versionName, candidate.versionCode)
+        }
+        return if (mismatch != null) {
+            FastModeFindResult.VersionMismatch(mismatch)
+        } else {
+            FastModeFindResult.None
+        }
     }
 
     private fun handleDownloadEvent(event: DownloadJobManager.Event?) {
@@ -1013,6 +1087,79 @@ class MainActivity : ComponentActivity() {
                     }
                 } else {
                     uiState = UiState.Error(event.message)
+                }
+            }
+            is DownloadJobManager.Event.ValidationMismatch -> {
+                // The download itself succeeded; only the version code differs
+                // from the request (the parser couldn't know it up front). The
+                // file is kept. Fast Mode asks the user; manual mode keeps the
+                // old hard-fail behavior.
+                val activeRequest = request
+                // Only the activity that owns this request may act on the
+                // event. A stale instance (no request, or a different request)
+                // must ignore it — and must NOT clear it first, or the owner's
+                // collector would never see it (StateFlow conflates: a clear
+                // before the owner processes the event swallows it).
+                if (activeRequest == null || event.candidate.packageName != activeRequest.packageName) return
+                if (fastModeActive) {
+                    appendLog(
+                        "Fast Mode: ${event.candidate.source.label} downloaded " +
+                            "${event.candidate.versionDisplay} — build differs from requested " +
+                            "${activeRequest.versionCodeSummary ?: "version"}. Asking the user.",
+                        LogLevel.Warning
+                    )
+                    val decisionGate = CompletableDeferred<FastModeChoice?>()
+                    fastModeDecision = decisionGate
+                    uiState = UiState.FastMode(
+                        FastModeProgress(
+                            sourceLabel = event.candidate.source.label,
+                            detail = "Version code mismatch",
+                            awaitingDecision = true,
+                            mismatchDetail = "Requested build ${activeRequest.versionCodeSummary ?: "?"} — " +
+                                "${event.candidate.source.label} downloaded " +
+                                "${event.candidate.versionDisplay}, found build " +
+                                "${event.foundVersionCode ?: "unknown"}."
+                        )
+                    )
+                    lifecycleScope.launch {
+                        val decision = decisionGate.await()
+                        DownloadJobManager.clearEvent()
+                        if (!fastModeActive || decision == null) {
+                            event.file.delete()
+                            return@launch
+                        }
+                        if (decision == FastModeChoice.USE) {
+                            appendLog(
+                                "Fast Mode: using downloaded ${event.candidate.versionDisplay} from " +
+                                    "${event.candidate.source.label} despite the code mismatch.",
+                                LogLevel.Info
+                            )
+                            runCatching {
+                                returnPreparedFile(activeRequest, event.candidate, event.file, helperSettings)
+                            }.onFailure { error ->
+                                appendLog(error.message ?: "Could not return the file.", LogLevel.Error)
+                                event.file.delete()
+                            }
+                            fastModeActive = false
+                            fastModeQueue = null
+                            uiState = UiState.Ready(initialCandidateResult(activeRequest))
+                        } else {
+                            event.file.delete()
+                            appendLog(
+                                "Fast Mode: user skipped ${event.candidate.source.label} — " +
+                                    "trying the next source.",
+                                LogLevel.Info
+                            )
+                            fastModeNext(activeRequest)
+                        }
+                    }
+                } else {
+                    DownloadJobManager.clearEvent()
+                    event.file.delete()
+                    val message = "Downloaded version code does not match the request " +
+                        "(found ${event.foundVersionCode ?: "unknown"})."
+                    appendLog(message, LogLevel.Error)
+                    uiState = UiState.Error(message)
                 }
             }
             is DownloadJobManager.Event.Cancelled -> {
@@ -1177,6 +1324,11 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 .onFailure { error ->
+                    // A code-mismatch keeps the file (so Fast Mode can ask); the
+                    // picked-file flow has no ask, so clean it up here.
+                    if (error is VersionCodeMismatchException) {
+                        error.file.delete()
+                    }
                     val message = (error.message ?: "Selected file could not be used.")
                         .withManualModeHint()
                     appendLog(message, LogLevel.Error)
@@ -1444,6 +1596,8 @@ private fun HelperScreen(
     onCancel: () -> Unit,
     onCancelDownload: () -> Unit,
     onCancelFastMode: () -> Unit,
+    onUseFastModeMismatch: () -> Unit,
+    onSkipFastModeMismatch: () -> Unit,
     onOpenMorphe: () -> Unit
 ) {
     var showSettings by remember { mutableStateOf(false) }
@@ -1523,6 +1677,18 @@ private fun HelperScreen(
                             maxLines = 1
                         )
                     }
+                    HelperBoltButton(
+                        fastMode = settings.fastMode,
+                        onClick = {
+                            val enabled = !settings.fastMode
+                            onSettingsChange(settings.copy(fastMode = enabled))
+                            Toast.makeText(
+                                context,
+                                if (enabled) "Fast Mode on" else "Fast Mode off",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
                     HelperOutlinedButton(
                         text = "Settings",
                         onClick = {
@@ -1533,13 +1699,6 @@ private fun HelperScreen(
                         modifier = Modifier.widthIn(min = 120.dp)
                     )
                 }
-            }
-
-            item {
-                FastModeHomeRow(
-                    fastMode = settings.fastMode,
-                    onToggle = { enabled -> onSettingsChange(settings.copy(fastMode = enabled)) }
-                )
             }
 
             if (request == null) {
@@ -1582,7 +1741,14 @@ private fun HelperScreen(
                 }
 
                 is UiState.FastMode -> {
-                    item { FastModeCard(state.progress, onCancel = onCancelFastMode) }
+                    item {
+                        FastModeCard(
+                            progress = state.progress,
+                            onCancel = onCancelFastMode,
+                            onUseMismatch = onUseFastModeMismatch,
+                            onSkipMismatch = onSkipFastModeMismatch
+                        )
+                    }
                     state.progress.result?.let { result ->
                         item {
                             SourceTabs(
@@ -2169,29 +2335,33 @@ private fun EmptyLaunchState(onOpenMorphe: () -> Unit) {
 }
 
 @Composable
-private fun FastModeHomeRow(
+private fun HelperBoltButton(
     fastMode: Boolean,
-    onToggle: (Boolean) -> Unit
+    onClick: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-        verticalAlignment = Alignment.CenterVertically
+    val primary = MaterialTheme.colorScheme.primary
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.size(HelperDefaults.ButtonHeight),
+        shape = RoundedCornerShape(HelperDefaults.ButtonCornerRadius),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = if (fastMode) primary.copy(alpha = 0.28f) else Color.Transparent,
+            contentColor = if (fastMode) {
+                primary
+            } else {
+                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
+            }
+        ),
+        border = BorderStroke(
+            1.dp,
+            if (fastMode) primary.copy(alpha = 0.6f) else primary.copy(alpha = 0.32f)
+        ),
+        contentPadding = PaddingValues(0.dp)
     ) {
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text("Fast Mode", fontWeight = FontWeight.Bold)
-            Text(
-                "Auto-find the exact requested version across sources and return it to Morphe.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        Switch(
-            checked = fastMode,
-            onCheckedChange = onToggle
+        Icon(
+            imageVector = Icons.Outlined.Bolt,
+            contentDescription = if (fastMode) "Fast Mode on" else "Fast Mode off",
+            modifier = Modifier.size(HelperDefaults.IconSizeSmall)
         )
     }
 }
@@ -3318,7 +3488,9 @@ private fun CheckingPickedFileState(state: UiState.CheckingPickedFile) {
 @Composable
 private fun FastModeCard(
     progress: FastModeProgress,
-    onCancel: () -> Unit
+    onCancel: () -> Unit,
+    onUseMismatch: () -> Unit,
+    onSkipMismatch: () -> Unit
 ) {
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
@@ -3345,7 +3517,7 @@ private fun FastModeCard(
                         )
                     }
                 }
-                if (!progress.done && progress.percent == null) {
+                if (!progress.done && progress.percent == null && !progress.awaitingDecision) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(22.dp),
                         strokeWidth = 2.5.dp
@@ -3361,7 +3533,52 @@ private fun FastModeCard(
                 },
                 style = MaterialTheme.typography.bodyMedium
             )
-            if (progress.percent != null && !progress.done) {
+            if (progress.awaitingDecision) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(HelperDefaults.ContentPadding),
+                        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Warning,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = progress.mismatchDetail ?: "Version code mismatch.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+                ) {
+                    HelperButton(
+                        text = "Use this version",
+                        onClick = onUseMismatch,
+                        modifier = Modifier.weight(1f)
+                    )
+                    HelperOutlinedButton(
+                        text = "Skip to next source",
+                        onClick = onSkipMismatch,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                HelperOutlinedButton(
+                    text = "Cancel",
+                    onClick = onCancel,
+                    icon = Icons.Outlined.Close,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else if (progress.percent != null && !progress.done) {
                 LinearProgressIndicator(
                     progress = { progress.percent / 100f },
                     modifier = Modifier.fillMaxWidth()
@@ -3576,6 +3793,29 @@ internal data class HelperRequest(
             candidateVersionCode > 0L &&
             candidateVersionCode in requestedCodes
         return nameMatches || codeMatches
+    }
+
+    /**
+     * Strict matcher used by Fast Mode, where the exact version name AND the
+     * exact version code are both required. Unlike [matchesRequestedVersion]
+     * (which accepts a name-only match), a candidate that reports a version
+     * code outside the requested set is rejected up front — so Fast Mode
+     * doesn't download a file that validation would reject anyway. When the
+     * source doesn't report a code, the name match is accepted (validation is
+     * still the backstop for the downloaded artifact).
+     */
+    fun matchesRequestedVersionStrict(candidateVersionName: String?, candidateVersionCode: Long?): Boolean {
+        if (versionName == null && requestedVersionCodes.isEmpty()) return false
+
+        val nameRequired = requestedVersionName != null
+        val nameMatches = candidateVersionName != null &&
+            candidateVersionName.versionNameEquals(requestedVersionName)
+        val codeRequired = requestedVersionCodes.isNotEmpty() && candidateVersionCode != null
+        val codeMatches = requestedVersionCodes.isEmpty() ||
+            candidateVersionCode == null ||
+            (candidateVersionCode > 0L && candidateVersionCode in requestedVersionCodes)
+
+        return (!nameRequired || nameMatches) && (!codeRequired || codeMatches)
     }
 
     fun sourceHintUrlsFor(source: DownloadSource): List<String> {
@@ -3984,6 +4224,14 @@ private sealed interface UiState {
     data class FastMode(val progress: FastModeProgress) : UiState
 }
 
+private enum class FastModeChoice { USE, NEXT }
+
+private sealed interface FastModeFindResult {
+    data class Exact(val candidate: DownloadCandidate) : FastModeFindResult
+    data class VersionMismatch(val candidate: DownloadCandidate) : FastModeFindResult
+    object None : FastModeFindResult
+}
+
 private data class FastModeProgress(
     val sourceLabel: String? = null,
     val detail: String = "Starting…",
@@ -3991,7 +4239,10 @@ private data class FastModeProgress(
     val done: Boolean = false,
     val succeeded: Boolean = false,
     // Present once Fast Mode finishes so the regular source list stays reachable.
-    val result: CandidateResult? = null
+    val result: CandidateResult? = null,
+    // Set while Fast Mode waits for the user to accept a version-code mismatch.
+    val awaitingDecision: Boolean = false,
+    val mismatchDetail: String? = null
 )
 
 internal object DownloadHelperContract {
