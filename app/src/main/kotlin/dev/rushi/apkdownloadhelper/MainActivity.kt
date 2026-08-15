@@ -2928,6 +2928,31 @@ private enum class SourceSubTab(val label: String) {
     History("History")
 }
 
+/** Sources that can resolve the exact requested version from their own data. */
+private val DownloadSource.supportsRecommended: Boolean
+    get() = when (this) {
+        // Mi9/APK Downloader are Cloudflare-gated: they can only offer the
+        // manual captcha-browser path, never a resolved recommended version.
+        DownloadSource.MI9,
+        DownloadSource.APK_DOWNLOADER,
+        DownloadSource.AURORA,
+        DownloadSource.PLAY -> false
+        else -> true
+    }
+
+/** Sources that expose a version history list. */
+private val DownloadSource.supportsHistory: Boolean
+    get() = when (this) {
+        // Evozi has an old-versions page but no history list; Mi9/APK
+        // Downloader are Cloudflare-gated. Aurora/Play never offer originals.
+        DownloadSource.EVOZI,
+        DownloadSource.MI9,
+        DownloadSource.APK_DOWNLOADER,
+        DownloadSource.AURORA,
+        DownloadSource.PLAY -> false
+        else -> true
+    }
+
 @Composable
 private fun SourcePageContent(
     request: HelperRequest,
@@ -2944,16 +2969,11 @@ private fun SourcePageContent(
     val subTabs = remember(group, request) {
         buildList {
             if (group.manual.isNotEmpty()) add(SourceSubTab.Manual)
-            if (request.hasKnownVersionRequest &&
-                group.source != DownloadSource.AURORA &&
-                group.source != DownloadSource.PLAY
-            ) {
+            if (request.hasKnownVersionRequest && group.source.supportsRecommended) {
                 add(SourceSubTab.Recommended)
             }
             add(SourceSubTab.Latest)
-            if (group.source != DownloadSource.AURORA &&
-                group.source != DownloadSource.PLAY
-            ) {
+            if (group.source.supportsHistory) {
                 add(SourceSubTab.History)
             }
         }
