@@ -281,6 +281,7 @@ class MainActivity : ComponentActivity() {
                         finish()
                     },
                     onCancelDownload = ::cancelDownload,
+                    onCancelFastMode = ::cancelFastMode,
                     onOpenMorphe = ::openMorpheManager
                 )
             }
@@ -839,9 +840,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun cancelFastMode() {
+        appendLog("Fast Mode cancelled — taking over manually.", LogLevel.Warning)
+        fastModeActive = false
+        fastModeQueue = null
+        // If a fast-mode download is in flight, stop it too; its Cancelled
+        // event also restores the source list.
+        if (DownloadJobManager.activeJob != null) {
+            cancelDownload()
+        }
+        val activeRequest = request
+        uiState = if (activeRequest != null) {
+            UiState.Ready(initialCandidateResult(activeRequest))
+        } else {
+            UiState.Idle
+        }
+    }
+
     private suspend fun fastModeNext(request: HelperRequest) {
         val queue = fastModeQueue ?: return
         while (queue.isNotEmpty()) {
+            // The user may have cancelled while a source was resolving.
+            if (!fastModeActive) return
             val source = queue.removeAt(0)
             appendLog("Fast Mode: checking ${source.label} for ${request.requestedVersionLabel}...")
             uiState = UiState.FastMode(
@@ -850,6 +870,7 @@ class MainActivity : ComponentActivity() {
             val candidate = withContext(Dispatchers.IO) {
                 runCatching { fastModeFindCandidate(request, source) }.getOrNull()
             }
+            if (!fastModeActive) return
             if (candidate != null) {
                 appendLog(
                     "Fast Mode: found ${candidate.versionDisplay} on ${source.label} " +
@@ -1422,6 +1443,7 @@ private fun HelperScreen(
     onClearLogs: () -> Unit,
     onCancel: () -> Unit,
     onCancelDownload: () -> Unit,
+    onCancelFastMode: () -> Unit,
     onOpenMorphe: () -> Unit
 ) {
     var showSettings by remember { mutableStateOf(false) }
@@ -1560,7 +1582,7 @@ private fun HelperScreen(
                 }
 
                 is UiState.FastMode -> {
-                    item { FastModeCard(state.progress) }
+                    item { FastModeCard(state.progress, onCancel = onCancelFastMode) }
                     state.progress.result?.let { result ->
                         item {
                             SourceTabs(
@@ -3294,7 +3316,10 @@ private fun CheckingPickedFileState(state: UiState.CheckingPickedFile) {
 }
 
 @Composable
-private fun FastModeCard(progress: FastModeProgress) {
+private fun FastModeCard(
+    progress: FastModeProgress,
+    onCancel: () -> Unit
+) {
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
             modifier = Modifier
@@ -3341,10 +3366,27 @@ private fun FastModeCard(progress: FastModeProgress) {
                     progress = { progress.percent / 100f },
                     modifier = Modifier.fillMaxWidth()
                 )
-                Text(
-                    text = "${progress.percent}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${progress.percent}%",
+                        fontWeight = FontWeight.Medium
+                    )
+                    HelperOutlinedButton(
+                        text = "Cancel",
+                        onClick = onCancel,
+                        icon = Icons.Outlined.Close
+                    )
+                }
+            } else if (!progress.done) {
+                HelperOutlinedButton(
+                    text = "Cancel",
+                    onClick = onCancel,
+                    icon = Icons.Outlined.Close,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
