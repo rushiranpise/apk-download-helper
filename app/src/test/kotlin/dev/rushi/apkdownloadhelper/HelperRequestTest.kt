@@ -46,4 +46,48 @@ class HelperRequestTest {
         // A candidate labeled with the generic multi-kind tag still covers APKS.
         assertTrue(request.acceptsFormat("APK/APKM/APKS/XAPK"))
     }
+
+    // ---- stale-result scoping (PendingDownloadResult.belongsTo) ----
+
+    private fun pendingResult(
+        requestPackage: String = "com.example.app",
+        versionName: String? = "1.2.3"
+    ) = PendingDownloadResult(
+        uri = "content://x/file.apk",
+        fileName = "file.apk",
+        packageName = "com.example.app",
+        versionName = versionName,
+        sourceName = "APKMirror",
+        requestPackage = requestPackage,
+        callerPackage = "app.morphe.manager"
+    )
+
+    @Test
+    fun belongsTo_matchesSamePackageAndVersion() {
+        val request = testRequest(packageName = "com.example.app", versionName = "1.2.3")
+        assertTrue(pendingResult(requestPackage = "com.example.app", versionName = "1.2.3").belongsTo(request))
+    }
+
+    @Test
+    fun belongsTo_rejectsDifferentPackage() {
+        val request = testRequest(packageName = "com.new.app", versionName = "1.2.3")
+        assertFalse(pendingResult(requestPackage = "com.example.app").belongsTo(request))
+    }
+
+    @Test
+    fun belongsTo_rejectsDifferentRequestedVersionOfSamePackage() {
+        val request = testRequest(packageName = "com.example.app", versionName = "9.9.9")
+        assertFalse(pendingResult(requestPackage = "com.example.app", versionName = "1.2.3").belongsTo(request))
+    }
+
+    @Test
+    fun belongsTo_acceptsWhenRequestPinsNoVersion() {
+        val request = testRequest(packageName = "com.example.app", versionName = null)
+        assertTrue(pendingResult(requestPackage = "com.example.app", versionName = "1.2.3").belongsTo(request))
+    }
+
+    @Test
+    fun belongsTo_rejectsNullRequest() {
+        assertFalse(pendingResult().belongsTo(null))
+    }
 }

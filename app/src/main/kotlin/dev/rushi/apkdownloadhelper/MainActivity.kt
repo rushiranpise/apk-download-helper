@@ -773,21 +773,33 @@ class MainActivity : ComponentActivity() {
                 uiState = UiState.Downloading(event.candidate, event.percent)
             }
             is DownloadJobManager.Event.Completed -> {
-                appendLog("Download validated: ${event.result.fileName}.")
-                if (!deliverResult(event.result)) {
-                    appendLog(
-                        "Download is ready; ${event.result.callerPackage} can request it again to receive the file.",
-                        LogLevel.Warning
-                    )
-                    // Opened standalone with no caller to return to — leave the
-                    // Downloading state so the screen is usable again.
-                    val activeRequest = request
-                    uiState = if (activeRequest != null) {
-                        UiState.Ready(initialCandidateResult(activeRequest))
-                    } else {
-                        UiState.Idle
+                // StateFlow replays its last value to every new collector, so a
+                // freshly created activity can receive the Completed event of a
+                // previous request session (after the old activity finished
+                // handing the file to Morphe). Only act when the result belongs
+                // to the current request; otherwise discard it so the old file
+                // is never handed to a different request.
+                if (event.result.belongsTo(request)) {
+                    appendLog("Download validated: ${event.result.fileName}.")
+                    if (!deliverResult(event.result)) {
+                        appendLog(
+                            "Download is ready; ${event.result.callerPackage} can request it again to receive the file.",
+                            LogLevel.Warning
+                        )
+                        // Opened standalone with no caller to return to — leave the
+                        // Downloading state so the screen is usable again.
+                        val activeRequest = request
+                        uiState = if (activeRequest != null) {
+                            UiState.Ready(initialCandidateResult(activeRequest))
+                        } else {
+                            UiState.Idle
+                        }
                     }
                 }
+                // The event has been observed (or discarded) — clear it so a
+                // future activity recreation cannot replay it into a new
+                // request session.
+                DownloadJobManager.clearEvent()
             }
             is DownloadJobManager.Event.Failed -> {
                 appendLog(event.message, LogLevel.Error)
@@ -814,18 +826,12 @@ class MainActivity : ComponentActivity() {
         // Morphe" notification so the old APK can never be handed back for the
         // new request (e.g. when the old completion notification is tapped
         // while the new request is on screen).
-        if (request.packageName != pending.requestPackage || !pendingVersionMatches(request, pending)) {
+        if (!pending.belongsTo(request)) {
             DownloadJobManager.clearPendingResult(applicationContext)
             cancelCompletionNotification()
             return false
         }
         return deliverResult(pending)
-    }
-
-    private fun pendingVersionMatches(request: HelperRequest, pending: PendingDownloadResult): Boolean {
-        val requestedName = request.requestedVersionName ?: return true
-        val pendingName = pending.versionName ?: return true
-        return pendingName.versionNameEquals(requestedName)
     }
 
     private fun cancelCompletionNotification() {
@@ -4002,6 +4008,21 @@ internal fun String?.versionNameEquals(other: String?): Boolean {
     val leftParts = left.versionNumberParts()
     val rightParts = right.versionNumberParts()
     return leftParts.isNotEmpty() && leftParts == rightParts
+}
+
+/**
+ * A downloaded result belongs to a request only when the package matches and
+ * the file's version satisfies the request (or the request didn't pin one).
+ * Used to stop a stale result — from a previous session's pending file or a
+ * replayed [DownloadJobManager.Event.Completed] — from being handed to a
+ * different request.
+ */
+internal fun PendingDownloadResult.belongsTo(request: HelperRequest?): Boolean {
+    if (request == null) return false
+    if (requestPackage != request.packageName) return false
+    val requestedName = request.requestedVersionName ?: return true
+    val candidateName = versionName ?: return true
+    return candidateName.versionNameEquals(requestedName)
 }
 
 internal fun String.withoutTrailingVersionCode(): String =

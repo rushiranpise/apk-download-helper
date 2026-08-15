@@ -100,6 +100,10 @@ internal object DownloadJobManager {
         _events.value = null
     }
 
+    fun clearEvent() {
+        _events.value = null
+    }
+
     fun emit(event: Event) {
         _events.value = event
         if (event is Event.Completed || event is Event.Cancelled) {
