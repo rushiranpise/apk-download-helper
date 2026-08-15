@@ -180,8 +180,14 @@ internal class UptodownParser(private val ctx: SourceParserContext) : ApkSourceP
                 ?.groupValues
                 ?.getOrNull(1)
         val fileKind = parseInfoTableValue(doc, "File type")?.lowercase(Locale.US) ?: "apk"
-        val externalUrl = doc.selectFirst("#detail-download-button[data-url-ext]")?.attr("data-url-ext")
+        val externalUrl = doc.selectFirst("#detail-download-button[data-url-ext]")
+            ?.attr("data-url-ext")
             ?.normalizedHttpUrlOrNull()
+            // data-url-ext is the external target for apps Uptodown does not host
+            // (e.g. an "external" Play Store listing like Discord). Pointing at a
+            // store page is not a downloadable file, so don't treat it as a direct
+            // download — the row should fall back to opening the page instead.
+            ?.takeUnless { it.isPlayStoreListing() }
             ?: uptodownDownloadUrlFromPage(doc)
         val normalizedDetailUrl = detailUrl.trimEnd('/')
         val dataCode = versionsDoc?.let(::uptodownDataCode) ?: uptodownDataCode(doc)
@@ -504,6 +510,11 @@ internal class UptodownParser(private val ctx: SourceParserContext) : ApkSourceP
 
     private fun uptodownPageUsesTurnstile(doc: Document): Boolean =
         doc.selectFirst("#download-turnstile-widget[data-sitekey]") != null
+
+    private fun String.isPlayStoreListing(): Boolean =
+        contains("play.google.com", ignoreCase = true) ||
+            contains("market.android.com", ignoreCase = true) ||
+            startsWith("market://", ignoreCase = true)
 
     private fun uptodownDownloadUrlFromPage(doc: Document): String? {
         val dataUrl = doc.selectFirst("#detail-download-button[data-url]")

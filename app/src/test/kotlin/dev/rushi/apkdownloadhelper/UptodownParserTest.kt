@@ -73,6 +73,75 @@ class UptodownParserTest {
     }
 
     @Test
+    fun resolveLatest_ignoresPlayStoreDataUrlExt() = runBlocking {
+        val playDownloadPage = """
+            <html><body>
+              <div id="detail-app-name" data-code="12345">Example App</div>
+              <div class="detail"><div class="info"><div class="version">2.0.0</div></div></div>
+              <table><tr><th>Package Name</th><td>$packageName</td></tr></table>
+              <button id="detail-download-button" class="button download external"
+                data-url-ext="https://play.google.com/store/apps/details?id=$packageName"></button>
+            </body></html>
+        """.trimIndent()
+        val parser = UptodownParser(
+            testParserContext(
+                pages = mapOf(
+                    searchUrl to """<html><body><a href="$detailUrl">Example App</a></body></html>""",
+                    "$detailUrl/download" to playDownloadPage
+                )
+            )
+        )
+
+        val candidates = parser.findCandidates(
+            testRequest(packageName = packageName),
+            CandidateOption.LATEST
+        )
+
+        assertEquals(1, candidates.size)
+        val candidate = candidates.single()
+        // A Play Store listing is not a downloadable file — the row must fall
+        // back to opening the Uptodown page instead of offering a download.
+        assertTrue(!candidate.directDownload)
+        assertEquals("$detailUrl/download", candidate.url)
+        assertTrue(candidate.files.isEmpty())
+        assertEquals("2.0.0", candidate.versionName)
+    }
+
+    @Test
+    fun resolveLatest_keepsRealExternalApkDataUrlExt() = runBlocking {
+        val externalApkUrl = "https://example.com/apps/example.apk"
+        val externalDownloadPage = """
+            <html><body>
+              <div id="detail-app-name" data-code="12345">Example App</div>
+              <div class="detail"><div class="info"><div class="version">2.0.0</div></div></div>
+              <table><tr><th>Package Name</th><td>$packageName</td></tr></table>
+              <button id="detail-download-button" class="button download external"
+                data-url-ext="$externalApkUrl"></button>
+            </body></html>
+        """.trimIndent()
+        val parser = UptodownParser(
+            testParserContext(
+                pages = mapOf(
+                    searchUrl to """<html><body><a href="$detailUrl">Example App</a></body></html>""",
+                    "$detailUrl/download" to externalDownloadPage
+                )
+            )
+        )
+
+        val candidates = parser.findCandidates(
+            testRequest(packageName = packageName),
+            CandidateOption.LATEST
+        )
+
+        assertEquals(1, candidates.size)
+        val candidate = candidates.single()
+        // A genuine externally-hosted APK is still a valid direct download.
+        assertTrue(candidate.directDownload)
+        assertEquals(externalApkUrl, candidate.url)
+        assertEquals(externalApkUrl, candidate.files.single().url)
+    }
+
+    @Test
     fun resolveHistoryCandidate_extractsDirectDownloadUrl() = runBlocking {
         val versionPageUrl = "$detailUrl/download/222"
         val parser = UptodownParser(
