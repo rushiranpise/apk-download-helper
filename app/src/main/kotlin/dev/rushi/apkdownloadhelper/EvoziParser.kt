@@ -56,7 +56,8 @@ internal class EvoziParser(
                 directDownload = false,
                 versionStatus = request.versionStatus(versionName, null),
                 formatMatches = true,
-                note = EVOZI_CAPTCHA_NOTE
+                note = EVOZI_CAPTCHA_NOTE,
+                captchaUrl = downloadUrl
             )
         )
     }
@@ -110,14 +111,15 @@ internal class EvoziParser(
                 directDownload = false,
                 versionStatus = VersionStatus.REQUESTED,
                 formatMatches = true,
-                note = EVOZI_CAPTCHA_NOTE
+                note = EVOZI_CAPTCHA_NOTE,
+                captchaUrl = downloadUrl
             )
         )
     }
 }
 
 private const val EVOZI_CAPTCHA_NOTE =
-    "APKCube (via Evozi) gates downloads behind a Cloudflare captcha. Open the page and download manually."
+    "APKCube (via Evozi) gates downloads behind a Cloudflare captcha. Solve it in the in-app browser or open the page manually."
 
 /**
  * The Next.js flight payload JSON-escapes its content (`\"` for quotes), so
@@ -156,14 +158,22 @@ private fun String.apkCubeDownloadHref(packageName: String): String? =
 
 /**
  * The version shown next to the app name on the APKCube downloader page, e.g.
- * `children":["2.5.0.6"," · ","","Paget96"]`.
+ * `children":["2.5.0.6"," · ","","Paget96"]`. The page has other
+ * `children` arrays earlier (nav labels like "apk-downloader"), so prefer a
+ * token that looks like a version (starts with a digit) before falling back to
+ * the first non-blank match.
  */
-private fun String.apkCubePageVersion(): String? =
-    Regex("""children":\["([^"]{1,40})"""")
+private fun String.apkCubePageVersion(): String? {
+    val versionLike = Regex("""children":\["(\d[^"]{1,40})"""")
+        .find(this)
+        ?.groupValues
+        ?.getOrNull(1)
+    return versionLike ?: Regex("""children":\["([^"]{1,40})"""")
         .find(this)
         ?.groupValues
         ?.getOrNull(1)
         ?.takeIf(String::isNotBlank)
+}
 
 /** Version names listed on the old-versions page, from `versionName":"X"` fields. */
 private fun String.apkCubeVersionNames(): List<String> =

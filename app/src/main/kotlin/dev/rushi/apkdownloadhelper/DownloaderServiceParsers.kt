@@ -30,20 +30,24 @@ internal class Mi9Parser : ApkSourceParser {
         request: HelperRequest,
         option: CandidateOption,
         status: VersionStatus
-    ): DownloadCandidate = DownloadCandidate(
-        source = source,
-        name = request.appName,
-        packageName = request.packageName,
-        versionName = request.versionName.takeIf { option == CandidateOption.REQUESTED },
-        versionCode = request.versionCode.takeIf { option == CandidateOption.REQUESTED },
-        url = searchUrl(request.packageName) ?: request.fallbackWebUrl,
-        fileKind = "web",
-        option = option,
-        directDownload = false,
-        versionStatus = status,
-        formatMatches = true,
-        note = "Mi9 blocks automated downloads (Cloudflare challenge). Open the site to download manually."
-    )
+    ): DownloadCandidate {
+        val url = searchUrl(request.packageName) ?: request.fallbackWebUrl
+        return DownloadCandidate(
+            source = source,
+            name = request.appName,
+            packageName = request.packageName,
+            versionName = request.versionName.takeIf { option == CandidateOption.REQUESTED },
+            versionCode = request.versionCode.takeIf { option == CandidateOption.REQUESTED },
+            url = url,
+            fileKind = "web",
+            option = option,
+            directDownload = false,
+            versionStatus = status,
+            formatMatches = true,
+            note = "Mi9 sits behind a Cloudflare challenge. Solve it in the in-app browser or open the site to download manually.",
+            captchaUrl = url
+        )
+    }
 }
 
 internal class ApkDownloaderPagesParser : ApkSourceParser {
@@ -67,18 +71,22 @@ internal class ApkDownloaderPagesParser : ApkSourceParser {
         request: HelperRequest,
         option: CandidateOption,
         status: VersionStatus
-    ): DownloadCandidate = DownloadCandidate(
-        source = source,
-        name = request.appName,
-        packageName = request.packageName,
-        versionName = request.versionName.takeIf { option == CandidateOption.REQUESTED },
-        versionCode = request.versionCode.takeIf { option == CandidateOption.REQUESTED },
-        url = searchUrl(request.packageName) ?: request.fallbackWebUrl,
-        fileKind = "web",
-        option = option,
-        directDownload = false,
-        versionStatus = status,
-        formatMatches = true,
-        note = "APK Downloader fetches files through the Mi9 API, which blocks automated access (Cloudflare challenge). Open the site to download manually."
-    )
+    ): DownloadCandidate {
+        val url = searchUrl(request.packageName) ?: request.fallbackWebUrl
+        return DownloadCandidate(
+            source = source,
+            name = request.appName,
+            packageName = request.packageName,
+            versionName = request.versionName.takeIf { option == CandidateOption.REQUESTED },
+            versionCode = request.versionCode.takeIf { option == CandidateOption.REQUESTED },
+            url = url,
+            fileKind = "web",
+            option = option,
+            directDownload = false,
+            versionStatus = status,
+            formatMatches = true,
+            note = "APK Downloader fetches files through the Mi9 API, which blocks automated access (Cloudflare challenge). Solve it in the in-app browser or open the site manually.",
+            captchaUrl = url
+        )
+    }
 }

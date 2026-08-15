@@ -14,9 +14,16 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
 import androidx.core.app.NotificationManagerCompat
@@ -65,6 +72,7 @@ import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -78,7 +86,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.surfaceColorAtElevation
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -243,6 +254,9 @@ class MainActivity : ComponentActivity() {
     private val logTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
     private val historyTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.US)
     private var pendingDownload: PendingDownload? = null
+    // Non-null while the in-app captcha browser is open for a candidate whose
+    // source gates the file behind a challenge a plain HTTP client cannot pass.
+    private var captchaBrowser by mutableStateOf<DownloadCandidate?>(null)
     private var fastModeActive = false
     private var fastModeQueue: MutableList<DownloadSource>? = null
     private var fastModeDecision: CompletableDeferred<FastModeChoice?>? = null
@@ -265,35 +279,45 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             HelperTheme {
-                HelperScreen(
-                    request = request,
-                    state = uiState,
-                    settings = helperSettings,
-                    logs = requestLogs,
-                    installedPackageRefreshToken = installedPackageRefreshToken,
-                    onSettingsChange = ::updateHelperSettings,
-                    onRefresh = ::loadCandidates,
-                    onResolve = ::resolveCandidates,
-                    onDownload = ::downloadAndReturn,
-                    onPickDownloadedFile = ::returnPickedFile,
-                    onUseInstalledApp = ::returnInstalledApp,
-                    onVersionHistory = ::loadVersionHistory,
-                    onDownloadVersion = ::downloadVersion,
-                    onOpenHistoryEntry = ::openHistoryEntry,
-                    onShareHistoryEntry = ::shareHistoryEntry,
-                    onClearHistory = { DownloadHistoryStore.clear(applicationContext) },
-                    onClearLogs = { requestLogs.clear() },
-                    onCancel = {
-                        appendLog("Query canceled by user.", LogLevel.Warning)
-                        setResult(Activity.RESULT_CANCELED)
-                        finish()
-                    },
-                    onCancelDownload = ::cancelDownload,
-                    onCancelFastMode = ::cancelFastMode,
-                    onUseFastModeMismatch = { fastModeChoose(FastModeChoice.USE) },
-                    onSkipFastModeMismatch = { fastModeChoose(FastModeChoice.NEXT) },
-                    onOpenMorphe = ::openMorpheManager
-                )
+                val captcha = captchaBrowser
+                if (captcha != null) {
+                    CaptchaBrowserScreen(
+                        candidate = captcha,
+                        onClose = ::closeCaptchaBrowser,
+                        onUrlCaptured = ::onCaptchaUrlCaptured
+                    )
+                } else {
+                    HelperScreen(
+                        request = request,
+                        state = uiState,
+                        settings = helperSettings,
+                        logs = requestLogs,
+                        installedPackageRefreshToken = installedPackageRefreshToken,
+                        onSettingsChange = ::updateHelperSettings,
+                        onRefresh = ::loadCandidates,
+                        onResolve = ::resolveCandidates,
+                        onDownload = ::downloadAndReturn,
+                        onPickDownloadedFile = ::returnPickedFile,
+                        onUseInstalledApp = ::returnInstalledApp,
+                        onVersionHistory = ::loadVersionHistory,
+                        onDownloadVersion = ::downloadVersion,
+                        onOpenHistoryEntry = ::openHistoryEntry,
+                        onShareHistoryEntry = ::shareHistoryEntry,
+                        onClearHistory = { DownloadHistoryStore.clear(applicationContext) },
+                        onClearLogs = { requestLogs.clear() },
+                        onCancel = {
+                            appendLog("Query canceled by user.", LogLevel.Warning)
+                            setResult(Activity.RESULT_CANCELED)
+                            finish()
+                        },
+                        onCancelDownload = ::cancelDownload,
+                        onCancelFastMode = ::cancelFastMode,
+                        onUseFastModeMismatch = { fastModeChoose(FastModeChoice.USE) },
+                        onSkipFastModeMismatch = { fastModeChoose(FastModeChoice.NEXT) },
+                        onOpenMorphe = ::openMorpheManager,
+                        onSolveCaptcha = ::openCaptchaBrowser
+                    )
+                }
             }
         }
 
@@ -805,6 +829,41 @@ class MainActivity : ComponentActivity() {
         }.onFailure {
             appendLog("Could not cancel the download.", LogLevel.Error)
         }
+    }
+
+    // ---- In-app captcha browser: let the user solve a captcha in a real
+    // browser and capture the download URL it produces ----
+
+    private fun openCaptchaBrowser(candidate: DownloadCandidate) {
+        val captchaUrl = candidate.captchaUrl ?: return
+        appendLog(
+            "Opening in-app browser for ${candidate.source.label} to solve the captcha.",
+            LogLevel.Info
+        )
+        captchaBrowser = candidate
+    }
+
+    private fun closeCaptchaBrowser() {
+        captchaBrowser = null
+    }
+
+    private fun onCaptchaUrlCaptured(url: String) {
+        val candidate = captchaBrowser ?: return
+        captchaBrowser = null
+        val fileKind = fileKindFromUrl(url)
+        appendLog(
+            "Captured download link from ${candidate.source.label} in the in-app browser " +
+                "($fileKind): $url",
+            LogLevel.Info
+        )
+        downloadAndReturn(
+            candidate.copy(
+                url = url,
+                fileKind = fileKind,
+                directDownload = true,
+                note = null
+            )
+        )
     }
 
     private fun openMorpheManager() {
@@ -1577,6 +1636,182 @@ private fun HelperOutlinedButton(
     }
 }
 
+// ---- In-app captcha browser: a real WebView that passes Cloudflare-style
+// challenges, captures the download URL the page produces, and hands it to the
+// normal download pipeline. Any source that gates its file behind a captcha can
+// opt in by setting DownloadCandidate.captchaUrl.
+
+@Composable
+private fun CaptchaBrowserScreen(
+    candidate: DownloadCandidate,
+    onClose: () -> Unit,
+    onUrlCaptured: (String) -> Unit
+) {
+    val context = LocalContext.current
+    var progress by remember { mutableIntStateOf(0) }
+    val bridge = remember {
+        CaptchaCaptureBridge { url ->
+            Handler(Looper.getMainLooper()).post {
+                onUrlCaptured(url)
+            }
+        }
+    }
+    val webView = remember {
+        WebView(context).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            addJavascriptInterface(bridge, CAPTCHA_BRIDGE_NAME)
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {
+                    val url = request?.url?.toString() ?: return false
+                    if (url.looksLikeApkDownload()) {
+                        onUrlCaptured(url)
+                        return true
+                    }
+                    return false
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    view?.evaluateJavascript(CAPTCHA_CAPTURE_JS, null)
+                }
+            }
+            setDownloadListener { url, _, _, _, _ ->
+                // Authoritative signal: the page started a real download.
+                onUrlCaptured(url)
+            }
+        }
+    }
+    DisposableEffect(webView) {
+        onDispose {
+            webView.stopLoading()
+            webView.destroy()
+        }
+    }
+    LaunchedEffect(candidate.url) {
+        webView.loadUrl(candidate.url)
+    }
+    BackHandler {
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            onClose()
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = HelperDefaults.ContentPadding, vertical = HelperDefaults.ContentPadding),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Solve captcha — ${candidate.source.label}",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = candidate.versionDisplay,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                HelperOutlinedButton(
+                    text = "Close",
+                    onClick = onClose,
+                    icon = Icons.Outlined.Close,
+                    modifier = Modifier.widthIn(min = 96.dp)
+                )
+            }
+            InfoCard(
+                "Solve the captcha in the browser. When the page starts the download, " +
+                    "the file is captured and returned to Morphe automatically."
+            )
+            if (progress > 0 && progress < 100) {
+                LinearProgressIndicator(
+                    progress = { progress / 100f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            AndroidView(
+                factory = { webView },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clip(RoundedCornerShape(HelperDefaults.SectionCornerRadius))
+            )
+        }
+    }
+}
+
+/** Posts captured URLs from the WebView's JS bridge back to Kotlin. */
+private class CaptchaCaptureBridge(
+    private val onUrl: (String) -> Unit
+) {
+    @JavascriptInterface
+    fun capture(url: String) {
+        onUrl(url)
+    }
+}
+
+private const val CAPTCHA_BRIDGE_NAME = "Android"
+
+/**
+ * Injected into every page the captcha browser finishes loading. Captures
+ * clicks on download-looking links and window.open calls that the download
+ * listener would not see (e.g. links opened in a new tab).
+ */
+private const val CAPTCHA_CAPTURE_JS = """
+(function () {
+  var re = /\.(apk|apks|apkm|xapk)(\?|#|$)/i;
+  function looksLike(u) {
+    if (!u) return false;
+    try { u = decodeURIComponent(u); } catch (e) {}
+    return re.test(u) || /filename[^.]*\.(apk|apks|apkm|xapk)/i.test(u);
+  }
+  
+  document.addEventListener('click', function (e) {
+    var el = e.target;
+    while (el && el !== document && !(el.tagName === 'A' && el.href)) el = el.parentNode;
+    if (el && el.tagName === 'A' && looksLike(el.href)) {
+      window.Android && window.Android.capture(el.href);
+    }
+  }, true);
+  var origOpen = window.open;
+  window.open = function (u) {
+    if (u && looksLike(u)) { window.Android && window.Android.capture(u); return null; }
+    return origOpen ? origOpen.apply(window, arguments) : null;
+  };
+})();
+"""
+
+/** True for URLs that point at an APK-family file (extension or filename hint). */
+private fun String.looksLikeApkDownload(): Boolean {
+    val decoded = Uri.decode(this).lowercase(Locale.US)
+    return Regex("""\.(apk|apks|apkm|xapk)(\?|#|$)""").containsMatchIn(decoded) ||
+        Regex("""filename[^.]*\.(apk|apks|apkm|xapk)""").containsMatchIn(decoded)
+}
+
 @Composable
 private fun HelperScreen(
     request: HelperRequest?,
@@ -1601,7 +1836,8 @@ private fun HelperScreen(
     onCancelFastMode: () -> Unit,
     onUseFastModeMismatch: () -> Unit,
     onSkipFastModeMismatch: () -> Unit,
-    onOpenMorphe: () -> Unit
+    onOpenMorphe: () -> Unit,
+    onSolveCaptcha: (DownloadCandidate) -> Unit
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var pendingFilePick by remember { mutableStateOf<DownloadCandidate?>(null) }
@@ -1728,6 +1964,7 @@ private fun HelperScreen(
                             onDownload = onDownload,
                             onPickDownloadedFile = openDownloadedFilePicker,
                             onUseInstalledApp = onUseInstalledApp,
+                            onSolveCaptcha = onSolveCaptcha,
                             onVersionHistory = onVersionHistory,
                             onDownloadVersion = onDownloadVersion,
                             onRefresh = onRefresh,
@@ -1761,6 +1998,7 @@ private fun HelperScreen(
                                 onDownload = onDownload,
                                 onPickDownloadedFile = openDownloadedFilePicker,
                                 onUseInstalledApp = onUseInstalledApp,
+                                onSolveCaptcha = onSolveCaptcha,
                                 onVersionHistory = onVersionHistory,
                                 onDownloadVersion = onDownloadVersion,
                                 onRefresh = onRefresh,
@@ -2604,6 +2842,7 @@ private fun SourceTabs(
     onDownload: (DownloadCandidate) -> Unit,
     onPickDownloadedFile: (DownloadCandidate) -> Unit,
     onUseInstalledApp: (DownloadCandidate) -> Unit,
+    onSolveCaptcha: (DownloadCandidate) -> Unit,
     onVersionHistory: (DownloadSource) -> Unit,
     onDownloadVersion: (DownloadCandidate) -> Unit,
     onRefresh: () -> Unit,
@@ -2673,6 +2912,7 @@ private fun SourceTabs(
                 onDownload = onDownload,
                 onPickDownloadedFile = onPickDownloadedFile,
                 onUseInstalledApp = onUseInstalledApp,
+                onSolveCaptcha = onSolveCaptcha,
                 onVersionHistory = onVersionHistory,
                 onDownloadVersion = onDownloadVersion,
                 installedPackageRefreshToken = installedPackageRefreshToken
@@ -2696,6 +2936,7 @@ private fun SourcePageContent(
     onDownload: (DownloadCandidate) -> Unit,
     onPickDownloadedFile: (DownloadCandidate) -> Unit,
     onUseInstalledApp: (DownloadCandidate) -> Unit,
+    onSolveCaptcha: (DownloadCandidate) -> Unit,
     onVersionHistory: (DownloadSource) -> Unit,
     onDownloadVersion: (DownloadCandidate) -> Unit,
     installedPackageRefreshToken: Int
@@ -2746,6 +2987,7 @@ private fun SourcePageContent(
                         onDownload = { onDownload(candidate) },
                         onPickDownloadedFile = { onPickDownloadedFile(candidate) },
                         onUseInstalledApp = { onUseInstalledApp(candidate) },
+                        onSolveCaptcha = { onSolveCaptcha(candidate) },
                         installedPackageRefreshToken = installedPackageRefreshToken
                     )
                 }
@@ -2768,6 +3010,7 @@ private fun SourcePageContent(
                     onDownload = onDownload,
                     onPickDownloadedFile = onPickDownloadedFile,
                     onUseInstalledApp = onUseInstalledApp,
+                    onSolveCaptcha = onSolveCaptcha,
                     installedPackageRefreshToken = installedPackageRefreshToken
                 )
             }
@@ -2799,6 +3042,7 @@ private fun SourcePageContent(
                     onDownload = onDownload,
                     onPickDownloadedFile = onPickDownloadedFile,
                     onUseInstalledApp = onUseInstalledApp,
+                    onSolveCaptcha = onSolveCaptcha,
                     installedPackageRefreshToken = installedPackageRefreshToken
                 )
             }
@@ -2811,7 +3055,8 @@ private fun SourcePageContent(
                 VersionHistorySection(
                     state = group.history,
                     onResolve = { onVersionHistory(group.source) },
-                    onDownloadVersion = onDownloadVersion
+                    onDownloadVersion = onDownloadVersion,
+                    onSolveCaptcha = onSolveCaptcha
                 )
             }
         }
@@ -2847,7 +3092,8 @@ private fun SubTabRow(
 private fun VersionHistorySection(
     state: VersionHistoryState,
     onResolve: () -> Unit,
-    onDownloadVersion: (DownloadCandidate) -> Unit
+    onDownloadVersion: (DownloadCandidate) -> Unit,
+    onSolveCaptcha: (DownloadCandidate) -> Unit
 ) {
     when (state) {
         VersionHistoryState.Idle -> {
@@ -2892,7 +3138,8 @@ private fun VersionHistorySection(
                     VersionHistoryRow(
                         candidate = candidate,
                         showOpenLink = candidate.identityKey() in state.noDirectDownloadKeys,
-                        onDownloadVersion = { onDownloadVersion(candidate) }
+                        onDownloadVersion = { onDownloadVersion(candidate) },
+                        onSolveCaptcha = { onSolveCaptcha(candidate) }
                     )
                 }
             }
@@ -2904,7 +3151,8 @@ private fun VersionHistorySection(
 private fun VersionHistoryRow(
     candidate: DownloadCandidate,
     showOpenLink: Boolean,
-    onDownloadVersion: () -> Unit
+    onDownloadVersion: () -> Unit,
+    onSolveCaptcha: (DownloadCandidate) -> Unit
 ) {
     val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
@@ -2941,26 +3189,37 @@ private fun VersionHistoryRow(
                     style = MaterialTheme.typography.bodySmall
                 )
             }
-            if (showOpenLink) {
-                HelperOutlinedButton(
-                    text = "Open link",
-                    onClick = {
-                        if (candidate.source == DownloadSource.PLAY) {
-                            context.openPlayStoreListing(candidate.packageName, candidate.url)
-                        } else {
-                            uriHandler.openUri(candidate.url)
-                        }
-                    },
-                    icon = Icons.Outlined.OpenInBrowser,
-                    modifier = Modifier.widthIn(min = 120.dp)
-                )
-            } else {
-                HelperButton(
-                    text = "Download",
-                    onClick = onDownloadVersion,
-                    icon = Icons.Outlined.Download,
-                    modifier = Modifier.widthIn(min = 120.dp)
-                )
+            when {
+                showOpenLink && candidate.captchaUrl != null -> {
+                    HelperButton(
+                        text = "Solve captcha",
+                        onClick = { onSolveCaptcha(candidate) },
+                        icon = Icons.Outlined.VerifiedUser,
+                        modifier = Modifier.widthIn(min = 140.dp)
+                    )
+                }
+                showOpenLink -> {
+                    HelperOutlinedButton(
+                        text = "Open link",
+                        onClick = {
+                            if (candidate.source == DownloadSource.PLAY) {
+                                context.openPlayStoreListing(candidate.packageName, candidate.url)
+                            } else {
+                                uriHandler.openUri(candidate.url)
+                            }
+                        },
+                        icon = Icons.Outlined.OpenInBrowser,
+                        modifier = Modifier.widthIn(min = 120.dp)
+                    )
+                }
+                else -> {
+                    HelperButton(
+                        text = "Download",
+                        onClick = onDownloadVersion,
+                        icon = Icons.Outlined.Download,
+                        modifier = Modifier.widthIn(min = 120.dp)
+                    )
+                }
             }
         }
     }
@@ -2977,6 +3236,7 @@ private fun CandidateResolveSection(
     onDownload: (DownloadCandidate) -> Unit,
     onPickDownloadedFile: (DownloadCandidate) -> Unit,
     onUseInstalledApp: (DownloadCandidate) -> Unit,
+    onSolveCaptcha: (DownloadCandidate) -> Unit,
     installedPackageRefreshToken: Int
 ) {
     when (state) {
@@ -3015,6 +3275,7 @@ private fun CandidateResolveSection(
                         onDownload = { onDownload(candidate) },
                         onPickDownloadedFile = { onPickDownloadedFile(candidate) },
                         onUseInstalledApp = { onUseInstalledApp(candidate) },
+                        onSolveCaptcha = { onSolveCaptcha(candidate) },
                         installedPackageRefreshToken = installedPackageRefreshToken
                     )
                 }
@@ -3030,6 +3291,7 @@ private fun CandidateResolveSection(
                     onDownload = { onDownload(candidate) },
                     onPickDownloadedFile = { onPickDownloadedFile(candidate) },
                     onUseInstalledApp = { onUseInstalledApp(candidate) },
+                    onSolveCaptcha = { onSolveCaptcha(candidate) },
                     installedPackageRefreshToken = installedPackageRefreshToken
                 )
             }
@@ -3250,6 +3512,7 @@ private fun CandidateCard(
     onDownload: () -> Unit,
     onPickDownloadedFile: () -> Unit,
     onUseInstalledApp: () -> Unit,
+    onSolveCaptcha: (DownloadCandidate) -> Unit,
     installedPackageRefreshToken: Int
 ) {
     val context = LocalContext.current
@@ -3291,6 +3554,14 @@ private fun CandidateCard(
                 modifier = Modifier.fillMaxWidth()
             )
         } else {
+            if (candidate.captchaUrl != null) {
+                HelperButton(
+                    text = "Solve captcha in app",
+                    onClick = { onSolveCaptcha(candidate) },
+                    icon = Icons.Outlined.VerifiedUser,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             HelperOutlinedButton(
                 text = "Open link",
                 onClick = {
@@ -4084,7 +4355,12 @@ internal data class DownloadCandidate(
     val formatMatches: Boolean,
     val note: String? = null,
     val variantLabel: String? = null,
-    val files: List<CandidateDownloadFile> = emptyList()
+    val files: List<CandidateDownloadFile> = emptyList(),
+    // When set, the source gates the file behind a captcha/JS challenge that
+    // only a real browser can pass. The card then offers a "Solve captcha in
+    // app" action that opens this URL in an embedded WebView and captures the
+    // download the page produces.
+    val captchaUrl: String? = null
 ) {
     val sortIndex: Int get() = source.sortIndex
     val versionDisplay: String

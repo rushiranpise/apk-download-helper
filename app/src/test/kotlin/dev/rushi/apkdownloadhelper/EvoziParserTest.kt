@@ -60,7 +60,24 @@ class EvoziParserTest {
         )
         assertFalse(candidate.directDownload)
         assertTrue(candidate.note.orEmpty().contains("captcha", ignoreCase = true))
+        assertEquals(candidate.url, candidate.captchaUrl)
         assertEquals(CandidateOption.LATEST, candidate.option)
+    }
+
+    @Test
+    fun latest_skipsNavLabelsBeforeVersion() {
+        // The real page has `children` arrays for nav labels ("apk-downloader")
+        // before the app-version row; the version must still win.
+        val page = """
+            <script>self.__next_f.push([1,"39:[\"R\",\"RL38\",null,{\"children\":[\"apk-downloader\"]}]"])</script>
+            <script>self.__next_f.push([1,"3a:[\"R\",\"RL3\",null,{\"children\":[\"2.5.0.6\",\" · \",\"\",\"Paget96\"]}]"])</script>
+            <script>self.__next_f.push([1,"3a:[\"R\",\"RL3\",null,{\"href\":\"/battery-guru-battery-health/com.paget96.batteryguru/download\"}]"])</script>
+        """.trimIndent()
+        val result = runBlocking {
+            parser(mapOf(downloaderUrl to page)).findCandidates(latestRequest(), CandidateOption.LATEST)
+        }
+        assertEquals(1, result.size)
+        assertEquals("2.5.0.6", result.first().versionName)
     }
 
     @Test
@@ -82,6 +99,7 @@ class EvoziParserTest {
         )
         assertEquals(VersionStatus.REQUESTED, candidate.versionStatus)
         assertFalse(candidate.directDownload)
+        assertEquals(candidate.url, candidate.captchaUrl)
     }
 
     @Test
@@ -117,10 +135,12 @@ class EvoziParserTest {
         assertEquals(CandidateOption.REQUESTED, requested.option)
         assertFalse(requested.directDownload)
         assertEquals("https://mi9.com/package/$packageName/", requested.url)
-        assertTrue(requested.note.orEmpty().contains("Mi9 blocks", ignoreCase = true))
+        assertEquals(requested.url, requested.captchaUrl)
+        assertTrue(requested.note.orEmpty().contains("Cloudflare", ignoreCase = true))
         val latest = parser.latestFallbackCandidate(request)
         assertEquals(CandidateOption.LATEST, latest.option)
         assertFalse(latest.directDownload)
+        assertEquals(latest.url, latest.captchaUrl)
         assertTrue(latest.note.orEmpty().contains("Cloudflare", ignoreCase = true))
     }
 
@@ -131,6 +151,7 @@ class EvoziParserTest {
         val requested = parser.requestedFallbackCandidate(request)
         assertFalse(requested.directDownload)
         assertEquals("https://apkdownloader.pages.dev/?package=$packageName", requested.url)
-        assertTrue(requested.note.orEmpty().contains("Mi9 API", ignoreCase = true))
+        assertEquals(requested.url, requested.captchaUrl)
+        assertTrue(requested.note.orEmpty().contains("Cloudflare", ignoreCase = true))
     }
 }
