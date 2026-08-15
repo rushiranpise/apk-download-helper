@@ -134,13 +134,14 @@ class EvoziParserTest {
         val requested = parser.requestedFallbackCandidate(request)
         assertEquals(CandidateOption.REQUESTED, requested.option)
         assertFalse(requested.directDownload)
-        assertEquals("https://mi9.com/package/$packageName/", requested.url)
+        assertEquals("https://mi9.com/package/$packageName/versions/", requested.url)
         assertEquals(requested.url, requested.captchaUrl)
         assertTrue(requested.note.orEmpty().contains("Cloudflare", ignoreCase = true))
         val latest = parser.latestFallbackCandidate(request)
         assertEquals(CandidateOption.LATEST, latest.option)
         assertFalse(latest.directDownload)
         assertEquals(latest.url, latest.captchaUrl)
+        assertEquals("https://mi9.com/package/$packageName/versions/", latest.url)
         assertTrue(latest.note.orEmpty().contains("Cloudflare", ignoreCase = true))
     }
 

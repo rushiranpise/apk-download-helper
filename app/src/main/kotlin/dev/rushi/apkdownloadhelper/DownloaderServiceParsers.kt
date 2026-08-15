@@ -4,16 +4,17 @@ package dev.rushi.apkdownloadhelper
  * Mi9's APK Downloader (mi9.com/apk-downloader) and its token API
  * (token.mi9.com / api.mi9.com) sit behind a Cloudflare "Just a moment" JS
  * challenge that plain HTTP clients cannot pass (verified from both desktop
- * and mobile networks). Rather than burning requests on the wall, these
- * sources resolve to an honest "Open link" candidate pointing at the site so
- * the user can download manually in a browser.
+ * and mobile networks). The app still offers a real path: every candidate
+ * points the in-app captcha browser at the app's version-history page, which
+ * a real browser loads fine — the user picks a version there and the
+ * download is captured back into the helper.
  */
 
 internal class Mi9Parser : ApkSourceParser {
     override val source = DownloadSource.MI9
 
     override fun searchUrl(packageName: String): String? =
-        "https://mi9.com/package/$packageName/"
+        "https://mi9.com/package/$packageName/versions/"
 
     override suspend fun findCandidates(
         request: HelperRequest,
@@ -44,7 +45,7 @@ internal class Mi9Parser : ApkSourceParser {
             directDownload = false,
             versionStatus = status,
             formatMatches = true,
-            note = "Mi9 sits behind a Cloudflare challenge. Solve it in the in-app browser or open the site to download manually.",
+            note = "Mi9 is Cloudflare-gated. Solve it in the in-app browser to browse the version history, or open the site manually.",
             captchaUrl = url
         )
     }

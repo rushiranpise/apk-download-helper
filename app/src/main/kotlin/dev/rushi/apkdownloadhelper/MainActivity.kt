@@ -2931,9 +2931,9 @@ private enum class SourceSubTab(val label: String) {
 /** Sources that can resolve the exact requested version from their own data. */
 private val DownloadSource.supportsRecommended: Boolean
     get() = when (this) {
-        // Mi9/APK Downloader are Cloudflare-gated: they can only offer the
-        // manual captcha-browser path, never a resolved recommended version.
-        DownloadSource.MI9,
+        // Mi9 exposes a real version-history page that the in-app captcha
+        // browser opens; its recommended candidate routes there. APK
+        // Downloader stays manual-only (Cloudflare-gated with no version list).
         DownloadSource.APK_DOWNLOADER,
         DownloadSource.AURORA,
         DownloadSource.PLAY -> false
