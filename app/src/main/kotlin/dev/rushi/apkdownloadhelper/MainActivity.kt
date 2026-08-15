@@ -236,6 +236,8 @@ class MainActivity : ComponentActivity() {
     private val logTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
     private val historyTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.US)
     private var pendingDownload: PendingDownload? = null
+    private var fastModeActive = false
+    private var fastModeQueue: MutableList<DownloadSource>? = null
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { _ -> startPendingDownload() }
@@ -284,7 +286,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        if (request != null) loadCandidates()
+        val activeRequest = request
+        if (activeRequest != null) {
+            loadCandidates()
+            startFastModeIfEnabled(activeRequest)
+        }
     }
 
     override fun onResume() {
@@ -297,9 +303,11 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         request = HelperRequest.from(intent)
         startRequestLog(request)
-        if (request != null) {
-            if (!deliverPendingResultIfPresent(request)) {
+        val activeRequest = request
+        if (activeRequest != null) {
+            if (!deliverPendingResultIfPresent(activeRequest)) {
                 loadCandidates()
+                startFastModeIfEnabled(activeRequest)
             }
         } else {
             uiState = UiState.Idle
@@ -804,6 +812,70 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ---- Fast Mode: auto-find the exact requested version and return it ----
+
+    private fun startFastModeIfEnabled(request: HelperRequest) {
+        if (!helperSettings.fastMode) return
+        if (!request.hasRequestedVersionRequest) return
+        if (fastModeActive) return
+        fastModeActive = true
+        fastModeQueue = DownloadSource.entries
+            .filter { it != DownloadSource.AURORA && it != DownloadSource.PLAY }
+            .toMutableList()
+        appendLog("Fast Mode: auto-searching sources for the exact requested version.", LogLevel.Info)
+        lifecycleScope.launch {
+            fastModeNext(request)
+        }
+    }
+
+    private suspend fun fastModeNext(request: HelperRequest) {
+        val queue = fastModeQueue ?: return
+        while (queue.isNotEmpty()) {
+            val source = queue.removeAt(0)
+            appendLog("Fast Mode: checking ${source.label} for ${request.requestedVersionLabel}...")
+            uiState = UiState.Loading
+            val candidate = withContext(Dispatchers.IO) {
+                runCatching { fastModeFindCandidate(request, source) }.getOrNull()
+            }
+            if (candidate != null) {
+                appendLog(
+                    "Fast Mode: found ${candidate.versionDisplay} on ${source.label} " +
+                        "(${candidate.fileKind.uppercase(Locale.US)}) — downloading.",
+                    LogLevel.Info
+                )
+                downloadAndReturn(candidate)
+                return
+            }
+            appendLog("Fast Mode: no exact match on ${source.label}.", LogLevel.Info)
+        }
+        fastModeActive = false
+        fastModeQueue = null
+        appendLog("Fast Mode: no source had the exact version. Use the sources below.", LogLevel.Warning)
+        val activeRequest = request
+        uiState = if (activeRequest != null) {
+            UiState.Ready(initialCandidateResult(activeRequest))
+        } else {
+            UiState.Idle
+        }
+    }
+
+    private suspend fun fastModeFindCandidate(
+        request: HelperRequest,
+        source: DownloadSource
+    ): DownloadCandidate? {
+        val outcome = resolveSourceSection(request, source, CandidateOption.REQUESTED)
+        return outcome.candidates
+            .firstOrNull { candidate ->
+                // Format differences are fine; the version (and, when the source
+                // reports it, the version code) must match. The downloaded file's
+                // real version code is re-checked during validation, so a
+                // wrong-code download fails and Fast Mode advances to the next
+                // source.
+                candidate.directDownload &&
+                    request.matchesRequestedVersion(candidate.versionName, candidate.versionCode)
+            }
+    }
+
     private fun handleDownloadEvent(event: DownloadJobManager.Event?) {
         when (event) {
             null -> Unit
@@ -826,6 +898,8 @@ class MainActivity : ComponentActivity() {
                         )
                         // Opened standalone with no caller to return to — leave the
                         // Downloading state so the screen is usable again.
+                        fastModeActive = false
+                        fastModeQueue = null
                         val activeRequest = request
                         uiState = if (activeRequest != null) {
                             UiState.Ready(initialCandidateResult(activeRequest))
@@ -841,10 +915,27 @@ class MainActivity : ComponentActivity() {
             }
             is DownloadJobManager.Event.Failed -> {
                 appendLog(event.message, LogLevel.Error)
-                uiState = UiState.Error(event.message)
+                if (fastModeActive) {
+                    val activeRequest = request
+                    if (activeRequest != null && !fastModeQueue.isNullOrEmpty()) {
+                        appendLog(
+                            "Fast Mode: ${event.candidate.source.label} did not work — trying the next source.",
+                            LogLevel.Warning
+                        )
+                        lifecycleScope.launch { fastModeNext(activeRequest) }
+                    } else {
+                        fastModeActive = false
+                        fastModeQueue = null
+                        uiState = UiState.Error(event.message)
+                    }
+                } else {
+                    uiState = UiState.Error(event.message)
+                }
             }
             is DownloadJobManager.Event.Cancelled -> {
                 appendLog("Download cancelled.", LogLevel.Warning)
+                fastModeActive = false
+                fastModeQueue = null
                 val activeRequest = request
                 uiState = if (activeRequest != null) {
                     UiState.Ready(initialCandidateResult(activeRequest))
@@ -1360,6 +1451,13 @@ private fun HelperScreen(
                 }
             }
 
+            item {
+                FastModeHomeRow(
+                    fastMode = settings.fastMode,
+                    onToggle = { enabled -> onSettingsChange(settings.copy(fastMode = enabled)) }
+                )
+            }
+
             if (request == null) {
                 item { EmptyLaunchState(onOpenMorphe) }
                 return@LazyColumn
@@ -1745,6 +1843,19 @@ private fun HelperSettingsCard(
             }
         }
 
+        SettingsGroupCard("Fast Mode") {
+            SettingSwitchRow(
+                title = "Fast Mode",
+                description = "Auto-find the exact requested version and version code across sources " +
+                    "(APKMirror, Uptodown, APKPure, APKCombo, Aptoide) and return it to Morphe automatically. " +
+                    "Format differences are allowed.",
+                checked = settings.fastMode,
+                onCheckedChange = {
+                    onSettingsChange(settings.copy(fastMode = it))
+                }
+            )
+        }
+
         SettingsGroupCard("Logging") {
             SettingSwitchRow(
                 title = "Log to Logcat",
@@ -1948,6 +2059,34 @@ private fun EmptyLaunchState(onOpenMorphe: () -> Unit) {
             onClick = onOpenMorphe,
             icon = Icons.Outlined.OpenInNew,
             modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
+private fun FastModeHomeRow(
+    fastMode: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text("Fast Mode", fontWeight = FontWeight.Bold)
+            Text(
+                "Auto-find the exact requested version across sources and return it to Morphe.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Switch(
+            checked = fastMode,
+            onCheckedChange = onToggle
         )
     }
 }

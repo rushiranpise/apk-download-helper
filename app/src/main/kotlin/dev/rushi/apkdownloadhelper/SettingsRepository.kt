@@ -19,7 +19,8 @@ internal data class HelperSettings(
     val downloadLocation: DownloadLocation = DownloadLocation.TEMPORARY,
     val networkPolicy: NetworkPolicy = NetworkPolicy.WIFI_AND_MOBILE,
     val deleteTemporaryAfterHandoff: Boolean = true,
-    val logcatLogging: Boolean = true
+    val logcatLogging: Boolean = true,
+    val fastMode: Boolean = false
 )
 
 internal enum class DownloadLocation(
@@ -92,7 +93,8 @@ internal fun Context.loadHelperSettings(): HelperSettings {
             NetworkPolicy.WIFI_AND_MOBILE
         ),
         deleteTemporaryAfterHandoff = prefs.getBoolean("delete_temporary_after_handoff", true),
-        logcatLogging = prefs.getBoolean("logcat_logging", true)
+        logcatLogging = prefs.getBoolean("logcat_logging", true),
+        fastMode = prefs.getBoolean("fast_mode", false)
     )
     logcatLoggingEnabled = settings.logcatLogging
     return settings
@@ -106,6 +108,7 @@ internal fun Context.saveHelperSettings(settings: HelperSettings) {
         .putString("network_policy", settings.networkPolicy.name)
         .putBoolean("delete_temporary_after_handoff", settings.deleteTemporaryAfterHandoff)
         .putBoolean("logcat_logging", settings.logcatLogging)
+        .putBoolean("fast_mode", settings.fastMode)
         .apply()
 }
 
