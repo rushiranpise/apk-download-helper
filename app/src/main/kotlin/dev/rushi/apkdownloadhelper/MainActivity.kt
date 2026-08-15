@@ -835,7 +835,7 @@ class MainActivity : ComponentActivity() {
     // browser and capture the download URL it produces ----
 
     private fun openCaptchaBrowser(candidate: DownloadCandidate) {
-        val captchaUrl = candidate.captchaUrl ?: return
+        if (candidate.source == DownloadSource.AURORA || candidate.source == DownloadSource.PLAY) return
         appendLog(
             "Opening in-app browser for ${candidate.source.label} to solve the captcha.",
             LogLevel.Info
@@ -1692,8 +1692,8 @@ private fun CaptchaBrowserScreen(
             webView.destroy()
         }
     }
-    LaunchedEffect(candidate.url) {
-        webView.loadUrl(candidate.url)
+    LaunchedEffect(candidate.captchaUrl ?: candidate.url) {
+        webView.loadUrl(candidate.captchaUrl ?: candidate.url)
     }
     BackHandler {
         if (webView.canGoBack()) {
@@ -3190,7 +3190,9 @@ private fun VersionHistoryRow(
                 )
             }
             when {
-                showOpenLink && candidate.captchaUrl != null -> {
+                showOpenLink &&
+                    candidate.source != DownloadSource.AURORA &&
+                    candidate.source != DownloadSource.PLAY -> {
                     HelperButton(
                         text = "Solve captcha",
                         onClick = { onSolveCaptcha(candidate) },
@@ -3554,7 +3556,11 @@ private fun CandidateCard(
                 modifier = Modifier.fillMaxWidth()
             )
         } else {
-            if (candidate.captchaUrl != null) {
+            // Every source except Aurora and Play can fall back to the in-app
+            // captcha browser: it opens the candidate's page in a real WebView
+            // (passing any Cloudflare challenge) and captures the download URL
+            // the page produces.
+            if (candidate.source != DownloadSource.AURORA && candidate.source != DownloadSource.PLAY) {
                 HelperButton(
                     text = "Solve captcha in app",
                     onClick = { onSolveCaptcha(candidate) },
