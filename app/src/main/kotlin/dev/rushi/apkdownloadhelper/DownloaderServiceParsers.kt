@@ -13,8 +13,7 @@ package dev.rushi.apkdownloadhelper
 internal class Mi9Parser : ApkSourceParser {
     override val source = DownloadSource.MI9
 
-    override fun searchUrl(packageName: String): String? =
-        "https://mi9.com/package/$packageName/versions/"
+    override fun searchUrl(packageName: String): String? = versionsUrl(packageName)
 
     override suspend fun findCandidates(
         request: HelperRequest,
@@ -27,12 +26,39 @@ internal class Mi9Parser : ApkSourceParser {
     override fun latestFallbackCandidate(request: HelperRequest): DownloadCandidate =
         blockedCandidate(request, CandidateOption.LATEST, VersionStatus.LATEST)
 
+    /** The version-history page can't be listed over plain HTTP (Cloudflare),
+     * so the history tab offers a single "browse in the in-app browser" row
+     * that opens the page and captures the download the user picks. */
+    override suspend fun resolveHistory(request: HelperRequest): List<DownloadCandidate> {
+        val url = versionsUrl(request.packageName)
+        return listOf(
+            DownloadCandidate(
+                source = source,
+                name = request.appName,
+                packageName = request.packageName,
+                versionName = "Version history",
+                versionCode = null,
+                url = url,
+                fileKind = "web",
+                option = CandidateOption.LATEST,
+                directDownload = false,
+                versionStatus = VersionStatus.LATEST,
+                formatMatches = true,
+                note = MI9_CAPTCHA_NOTE,
+                captchaUrl = url
+            )
+        )
+    }
+
+    private fun versionsUrl(packageName: String): String =
+        "https://mi9.com/package/$packageName/versions/"
+
     private fun blockedCandidate(
         request: HelperRequest,
         option: CandidateOption,
         status: VersionStatus
     ): DownloadCandidate {
-        val url = searchUrl(request.packageName) ?: request.fallbackWebUrl
+        val url = versionsUrl(request.packageName)
         return DownloadCandidate(
             source = source,
             name = request.appName,
@@ -45,11 +71,14 @@ internal class Mi9Parser : ApkSourceParser {
             directDownload = false,
             versionStatus = status,
             formatMatches = true,
-            note = "Mi9 is Cloudflare-gated. Solve it in the in-app browser to browse the version history, or open the site manually.",
+            note = MI9_CAPTCHA_NOTE,
             captchaUrl = url
         )
     }
 }
+
+private const val MI9_CAPTCHA_NOTE =
+    "Mi9 is Cloudflare-gated. Solve it in the in-app browser to browse the version history, or open the site manually."
 
 internal class ApkDownloaderPagesParser : ApkSourceParser {
     override val source = DownloadSource.APK_DOWNLOADER

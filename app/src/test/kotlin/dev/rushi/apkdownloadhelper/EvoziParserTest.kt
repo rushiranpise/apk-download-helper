@@ -146,6 +146,20 @@ class EvoziParserTest {
     }
 
     @Test
+    fun mi9_history_offersVersionHistoryBrowseRow() {
+        val parser = Mi9Parser()
+        val request = testRequest(packageName = packageName, versionName = "2.5.0.6")
+        val result = runBlocking { parser.resolveHistory(request) }
+        assertEquals(1, result.size)
+        val row = result.first()
+        assertEquals("Version history", row.versionName)
+        assertFalse(row.directDownload)
+        assertEquals("https://mi9.com/package/$packageName/versions/", row.url)
+        assertEquals(row.url, row.captchaUrl)
+        assertTrue(row.note.orEmpty().contains("Cloudflare", ignoreCase = true))
+    }
+
+    @Test
     fun pagesDev_fallbacksAreOpenLinkWithBlockedNote() {
         val parser = ApkDownloaderPagesParser()
         val request = testRequest(packageName = packageName, versionName = "2.5.0.6")

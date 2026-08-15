@@ -2943,10 +2943,11 @@ private val DownloadSource.supportsRecommended: Boolean
 /** Sources that expose a version history list. */
 private val DownloadSource.supportsHistory: Boolean
     get() = when (this) {
-        // Evozi has an old-versions page but no history list; Mi9/APK
-        // Downloader are Cloudflare-gated. Aurora/Play never offer originals.
+        // Evozi has an old-versions page but no history list; APK Downloader
+        // is Cloudflare-gated with no version list. Mi9's history tab offers a
+        // "browse the version history in the in-app browser" row. Aurora/Play
+        // never offer originals.
         DownloadSource.EVOZI,
-        DownloadSource.MI9,
         DownloadSource.APK_DOWNLOADER,
         DownloadSource.AURORA,
         DownloadSource.PLAY -> false
@@ -3196,6 +3197,10 @@ private fun VersionHistoryRow(
                 )
                 Text(
                     text = when {
+                        // Captcha-gated rows (e.g. Mi9's version history) are
+                        // browsed in the in-app captcha browser, not downloaded.
+                        candidate.captchaUrl != null && !candidate.directDownload ->
+                            "Browsable in the in-app browser (version history)"
                         showOpenLink -> "No direct download — open the version page"
                         // History rows know only the version page until the
                         // user taps Download, which resolves the real format.
@@ -3210,7 +3215,7 @@ private fun VersionHistoryRow(
                 )
             }
             when {
-                showOpenLink &&
+                (showOpenLink || (candidate.captchaUrl != null && !candidate.directDownload)) &&
                     candidate.source != DownloadSource.AURORA &&
                     candidate.source != DownloadSource.PLAY -> {
                     HelperButton(
