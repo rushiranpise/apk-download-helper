@@ -46,7 +46,7 @@ internal const val ACTION_RETRY_DOWNLOAD = "dev.rushi.apkdownloadhelper.action.R
 private const val CHANNEL_PROGRESS = "download_progress"
 private const val CHANNEL_DONE = "download_done"
 private const val NOTIFICATION_ID_PROGRESS = 1001
-private const val NOTIFICATION_ID_DONE = 1002
+internal const val NOTIFICATION_ID_DONE = 1002
 private const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
 private const val PREFS_PENDING = "pending_download_result"
 

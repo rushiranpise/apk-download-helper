@@ -18,6 +18,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.ComponentActivity
+import androidx.core.app.NotificationManagerCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
@@ -807,8 +808,30 @@ class MainActivity : ComponentActivity() {
     private fun deliverPendingResultIfPresent(request: HelperRequest?): Boolean {
         if (request == null) return false
         val pending = DownloadJobManager.readPendingResult(applicationContext) ?: return false
-        if (request.packageName != pending.requestPackage) return false
+        // The stored result belongs to a previous request session. A new request
+        // for a different app (or for a different version of the same app)
+        // invalidates it — drop the pending file and its stale "return to
+        // Morphe" notification so the old APK can never be handed back for the
+        // new request (e.g. when the old completion notification is tapped
+        // while the new request is on screen).
+        if (request.packageName != pending.requestPackage || !pendingVersionMatches(request, pending)) {
+            DownloadJobManager.clearPendingResult(applicationContext)
+            cancelCompletionNotification()
+            return false
+        }
         return deliverResult(pending)
+    }
+
+    private fun pendingVersionMatches(request: HelperRequest, pending: PendingDownloadResult): Boolean {
+        val requestedName = request.requestedVersionName ?: return true
+        val pendingName = pending.versionName ?: return true
+        return pendingName.versionNameEquals(requestedName)
+    }
+
+    private fun cancelCompletionNotification() {
+        runCatching {
+            NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID_DONE)
+        }
     }
 
     private fun deliverResult(pending: PendingDownloadResult): Boolean {
@@ -834,6 +857,7 @@ class MainActivity : ComponentActivity() {
             )
         }
         DownloadJobManager.clearPendingResult(applicationContext)
+        cancelCompletionNotification()
         finish()
         return true
     }
