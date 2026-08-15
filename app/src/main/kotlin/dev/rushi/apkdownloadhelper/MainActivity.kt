@@ -1724,27 +1724,15 @@ private fun SettingsGroupCard(
     title: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(HelperDefaults.ContentPadding),
-            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
-        ) {
-            SettingsGroupTitle(title)
-            content()
-        }
+    // No card background: the group is just a section title followed by its
+    // individual option rows, which carry their own card styling.
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+    ) {
+        SectionTitle(title)
+        content()
     }
-}
-
-@Composable
-private fun SettingsGroupTitle(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleSmall,
-        fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.onSurface
-    )
 }
 
 @Composable
