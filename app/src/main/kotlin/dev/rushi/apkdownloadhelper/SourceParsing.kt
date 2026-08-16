@@ -39,9 +39,9 @@ internal class OkHttpSourceTextFetcher(
         client.newCall(builder.build()).execute().use { response ->
             if (!response.isSuccessful) {
                 if (response.code == 429) {
-                    throw HttpRateLimitedException("HTTP 429 Too Many Requests")
+                    throw HttpRateLimitedException("HTTP 429 Too Many Requests for $url")
                 }
-                throw IllegalStateException("HTTP ${response.code}")
+                throw IllegalStateException("HTTP ${response.code} for $url")
             }
             return response.body.string()
         }

@@ -269,8 +269,6 @@ class MainActivity : ComponentActivity() {
     private var uiState by mutableStateOf<UiState>(UiState.Idle)
     private var helperSettings by mutableStateOf(HelperSettings())
     private var installedPackageRefreshToken by mutableIntStateOf(0)
-    private val requestLogs = mutableStateListOf<RequestLogEntry>()
-    private val logTimeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
     private val historyTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.US)
     private var pendingDownload: PendingDownload? = null
     // Non-null while the in-app captcha browser is open for a candidate whose
@@ -310,7 +308,7 @@ class MainActivity : ComponentActivity() {
                         request = request,
                         state = uiState,
                         settings = helperSettings,
-                        logs = requestLogs,
+                        logs = AppLog.entries,
                         installedPackageRefreshToken = installedPackageRefreshToken,
                         onSettingsChange = ::updateHelperSettings,
                         onRefresh = ::loadCandidates,
@@ -323,7 +321,7 @@ class MainActivity : ComponentActivity() {
                         onOpenHistoryEntry = ::openHistoryEntry,
                         onShareHistoryEntry = ::shareHistoryEntry,
                         onClearHistory = { DownloadHistoryStore.clear(applicationContext) },
-                        onClearLogs = { requestLogs.clear() },
+                        onClearLogs = { AppLog.clear() },
                         onCancel = {
                             appendLog("Query canceled by user.", LogLevel.Warning)
                             setResult(Activity.RESULT_CANCELED)
@@ -505,10 +503,26 @@ class MainActivity : ComponentActivity() {
         parsers[candidate.source]?.resolveHistoryCandidate(request, candidate)
 
     private fun startRequestLog(request: HelperRequest?) {
-        requestLogs.clear()
+        AppLog.clear()
         if (request == null) {
+            AppLog.setRequestSummary(null)
             appendLog("Opened without a Morphe request.", LogLevel.Warning)
         } else {
+            AppLog.setRequestSummary(
+                buildString {
+                    append("App: ${request.appName}\n")
+                    append("Package: ${request.packageName}\n")
+                    append("Version: ${request.requestedVersionName ?: "any compatible"}\n")
+                    append("Build: ${request.versionCodeSummary ?: "any"}\n")
+                    append("Format: ${request.requestedFormatLabel.ifBlank { "any" }}\n")
+                    if (request.availableAbis.isNotEmpty()) {
+                        append("ABI: ${request.abiSummary}\n")
+                    }
+                    request.sourceHintUrls.takeIf { it.isNotEmpty() }?.let { urls ->
+                        append("Source hints: ${urls.joinToString()}\n")
+                    }
+                }.trimEnd()
+            )
             appendLog(
                 "Request for ${request.appName} (${request.packageName}), " +
                     "version ${request.versionName ?: "any compatible"}, " +
@@ -558,18 +572,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun appendLog(message: String, level: LogLevel = LogLevel.Info) {
-        val timestamp = synchronized(logTimeFormat) { logTimeFormat.format(Date()) }
-        requestLogs += RequestLogEntry(timestamp, level, message)
-        while (requestLogs.size > 200) {
-            requestLogs.removeAt(0)
-        }
-        if (logcatLoggingEnabled) {
-            when (level) {
-                LogLevel.Info -> Log.i(TAG, message)
-                LogLevel.Warning -> Log.w(TAG, message)
-                LogLevel.Error -> Log.e(TAG, message)
-            }
-        }
+        // Single shared sink: the Logs tab and the HTTP interceptor both write
+        // here, and Logcat mirroring is handled by the sink per the setting.
+        AppLog.record(level, message)
     }
 
     private fun updateHelperSettings(settings: HelperSettings) {
@@ -4001,6 +4006,7 @@ private fun RequestLogsCard(
     logs: List<RequestLogEntry>,
     onClearLogs: () -> Unit
 ) {
+    val context = LocalContext.current
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
@@ -4015,6 +4021,20 @@ private fun RequestLogsCard(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f)
+            )
+            HelperOutlinedButton(
+                text = "Share",
+                icon = Icons.Outlined.Share,
+                onClick = {
+                    val share = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_SUBJECT, "APK Download Helper logs")
+                        putExtra(Intent.EXTRA_TEXT, AppLog.exportText())
+                    }
+                    context.startActivity(Intent.createChooser(share, "Share logs"))
+                },
+                // Icon + text needs more room than the plain "Clear" button.
+                modifier = Modifier.widthIn(min = 120.dp)
             )
             HelperOutlinedButton(
                 text = "Clear",
@@ -5057,18 +5077,6 @@ internal enum class VersionStatus(val label: String) {
     REQUESTED("Requested"),
     COMPATIBLE("Compatible"),
     LATEST("Latest")
-}
-
-private data class RequestLogEntry(
-    val time: String,
-    val level: LogLevel,
-    val message: String
-)
-
-private enum class LogLevel(val badge: String) {
-    Info("I"),
-    Warning("W"),
-    Error("E")
 }
 
 @Composable
