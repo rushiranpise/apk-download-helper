@@ -66,6 +66,10 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.LightMode
+import androidx.compose.material.icons.outlined.Palette
+import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -101,7 +105,11 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.surfaceColorAtElevation
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.runtime.Composable
@@ -307,7 +315,10 @@ class MainActivity : ComponentActivity() {
         if (deliverPendingResultIfPresent(request)) return
 
         setContent {
-            HelperTheme {
+            HelperTheme(
+                themeMode = helperSettings.themeMode,
+                dynamicColors = helperSettings.dynamicColors
+            ) {
                 val captcha = captchaBrowser
                 if (captcha != null) {
                     CaptchaBrowserScreen(
@@ -1612,37 +1623,82 @@ private object HelperDefaults {
 }
 
 @Composable
-private fun HelperTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Color(0xFFA4C9FF),
-            onPrimary = Color(0xFF00315D),
-            primaryContainer = Color(0xFF004884),
-            onPrimaryContainer = Color(0xFFD4E3FF),
-            secondary = Color(0xFFBCC7DB),
-            onSecondary = Color(0xFF263141),
-            secondaryContainer = Color(0xFF3D4758),
-            onSecondaryContainer = Color(0xFFD8E3F8),
-            tertiary = Color(0xFFD9BDE3),
-            onTertiary = Color(0xFF3D2946),
-            tertiaryContainer = Color(0xFF543F5E),
-            onTertiaryContainer = Color(0xFFF6D9FF),
-            error = Color(0xFFFFB4AB),
-            errorContainer = Color(0xFF93000A),
-            onError = Color(0xFF690005),
-            onErrorContainer = Color(0xFFFFDAD6),
-            background = Color(0xFF0B0C10),
-            onBackground = Color(0xFFE3E2E6),
-            surface = Color(0xFF1A1C1E),
-            onSurface = Color(0xFFE3E2E6),
-            surfaceVariant = Color(0xFF43474E),
-            onSurfaceVariant = Color(0xFFC3C6CF),
-            outline = Color(0xFF8D9199),
-            outlineVariant = Color(0xFF43474E),
-        ),
-        content = content
-    )
+private fun HelperTheme(
+    themeMode: ThemeMode,
+    dynamicColors: Boolean,
+    content: @Composable () -> Unit
+) {
+    val context = LocalContext.current
+    val dark = when (themeMode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.DARK -> true
+        ThemeMode.LIGHT -> false
+    }
+    helperDarkTheme = dark
+    val colorScheme = when {
+        dynamicColors && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        dark -> darkHelperColorScheme()
+        else -> lightHelperColorScheme()
+    }
+    MaterialTheme(colorScheme = colorScheme, content = content)
 }
+
+@Composable
+private fun darkHelperColorScheme() = darkColorScheme(
+    primary = Color(0xFFA4C9FF),
+    onPrimary = Color(0xFF00315D),
+    primaryContainer = Color(0xFF004884),
+    onPrimaryContainer = Color(0xFFD4E3FF),
+    secondary = Color(0xFFBCC7DB),
+    onSecondary = Color(0xFF263141),
+    secondaryContainer = Color(0xFF3D4758),
+    onSecondaryContainer = Color(0xFFD8E3F8),
+    tertiary = Color(0xFFD9BDE3),
+    onTertiary = Color(0xFF3D2946),
+    tertiaryContainer = Color(0xFF543F5E),
+    onTertiaryContainer = Color(0xFFF6D9FF),
+    error = Color(0xFFFFB4AB),
+    errorContainer = Color(0xFF93000A),
+    onError = Color(0xFF690005),
+    onErrorContainer = Color(0xFFFFDAD6),
+    background = Color(0xFF0B0C10),
+    onBackground = Color(0xFFE3E2E6),
+    surface = Color(0xFF1A1C1E),
+    onSurface = Color(0xFFE3E2E6),
+    surfaceVariant = Color(0xFF43474E),
+    onSurfaceVariant = Color(0xFFC3C6CF),
+    outline = Color(0xFF8D9199),
+    outlineVariant = Color(0xFF43474E),
+)
+
+@Composable
+private fun lightHelperColorScheme() = lightColorScheme(
+    primary = Color(0xFF005FAD),
+    onPrimary = Color(0xFFFFFFFF),
+    primaryContainer = Color(0xFFD4E3FF),
+    onPrimaryContainer = Color(0xFF001C3A),
+    secondary = Color(0xFF3D4758),
+    onSecondary = Color(0xFFFFFFFF),
+    secondaryContainer = Color(0xFFD8E3F8),
+    onSecondaryContainer = Color(0xFF263141),
+    tertiary = Color(0xFF543F5E),
+    onTertiary = Color(0xFFFFFFFF),
+    tertiaryContainer = Color(0xFFF6D9FF),
+    onTertiaryContainer = Color(0xFF3D2946),
+    error = Color(0xFFBA1A1A),
+    errorContainer = Color(0xFFFFDAD6),
+    onError = Color(0xFFFFFFFF),
+    onErrorContainer = Color(0xFF93000A),
+    background = Color(0xFFF7F8FA),
+    onBackground = Color(0xFF1A1C1E),
+    surface = Color(0xFFEFF0F3),
+    onSurface = Color(0xFF1A1C1E),
+    surfaceVariant = Color(0xFFDEE1E8),
+    onSurfaceVariant = Color(0xFF43474E),
+    outline = Color(0xFF74777F),
+    outlineVariant = Color(0xFFC4C6CF),
+)
 
 @Composable
 private fun HelperCard(
@@ -2468,6 +2524,31 @@ private fun HelperSettingsCard(
             }
         }
 
+        SettingsGroupCard("Appearance") {
+            ThemeMode.entries.forEach { mode ->
+                SettingsOptionCard(
+                    icon = mode.icon(),
+                    title = mode.title,
+                    description = mode.description,
+                    selected = settings.themeMode == mode,
+                    onClick = {
+                        onSettingsChange(settings.copy(themeMode = mode))
+                    }
+                )
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                SettingSwitchRow(
+                    icon = Icons.Outlined.Palette,
+                    title = "Material You colors",
+                    description = "Tint the app from your wallpaper instead of the default blue accent.",
+                    checked = settings.dynamicColors,
+                    onCheckedChange = {
+                        onSettingsChange(settings.copy(dynamicColors = it))
+                    }
+                )
+            }
+        }
+
         SettingsGroupCard("Sources") {
             DownloadSource.entries.forEach { source ->
                 SourceToggleRow(
@@ -2543,6 +2624,12 @@ private fun NetworkPolicy.icon(): ImageVector = when (this) {
     NetworkPolicy.WIFI_AND_MOBILE -> Icons.Outlined.NetworkCheck
 }
 
+private fun ThemeMode.icon(): ImageVector = when (this) {
+    ThemeMode.SYSTEM -> Icons.Outlined.Smartphone
+    ThemeMode.DARK -> Icons.Outlined.DarkMode
+    ThemeMode.LIGHT -> Icons.Outlined.LightMode
+}
+
 @Composable
 private fun SettingsOptionCard(
     icon: ImageVector,
@@ -2564,7 +2651,7 @@ private fun SettingsOptionCard(
         color = if (selected) {
             colors.primary.copy(alpha = 0.16f)
         } else {
-            Color(SourceCardFill)
+            sourceCardFill()
         },
         contentColor = colors.onSurface,
         border = BorderStroke(
@@ -2572,7 +2659,7 @@ private fun SettingsOptionCard(
             color = if (selected) {
                 colors.primary
             } else {
-                Color(SourceCardBorder)
+                sourceCardBorder()
             }
         )
     ) {
@@ -2623,8 +2710,8 @@ private fun SettingsStorageCard(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = shape,
-        color = Color(SourceCardFill),
-        border = BorderStroke(1.dp, Color(SourceCardBorder))
+        color = sourceCardFill(),
+        border = BorderStroke(1.dp, sourceCardBorder())
     ) {
         Column(
             modifier = Modifier
@@ -2739,10 +2826,10 @@ private fun SettingSwitchRow(
         modifier = Modifier.fillMaxWidth(),
         shape = shape,
         // Like the option cards: the switch card tints when the toggle is on.
-        color = if (checked) colors.primary.copy(alpha = 0.16f) else Color(SourceCardFill),
+        color = if (checked) colors.primary.copy(alpha = 0.16f) else sourceCardFill(),
         border = BorderStroke(
             width = if (checked) 1.5.dp else 1.dp,
-            color = if (checked) colors.primary else Color(SourceCardBorder)
+            color = if (checked) colors.primary else sourceCardBorder()
         )
     ) {
         Row(
@@ -2792,8 +2879,8 @@ private fun SourceToggleRow(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = shape,
-        color = Color(SourceCardFill),
-        border = BorderStroke(1.dp, Color(SourceCardBorder))
+        color = sourceCardFill(),
+        border = BorderStroke(1.dp, sourceCardBorder())
     ) {
         Row(
             modifier = Modifier
@@ -3017,8 +3104,8 @@ private fun AppInfoStatCard(
     Surface(
         modifier = modifier.clip(shape),
         shape = shape,
-        color = Color(SourceCardFill),
-        border = BorderStroke(1.dp, Color(SourceCardBorder))
+        color = sourceCardFill(),
+        border = BorderStroke(1.dp, sourceCardBorder())
     ) {
         Column(
             modifier = Modifier
@@ -3062,8 +3149,8 @@ private fun AppInfoFormatCard(
     Surface(
         modifier = modifier.clip(shape),
         shape = shape,
-        color = Color(SourceCardFill),
-        border = BorderStroke(1.dp, Color(SourceCardBorder))
+        color = sourceCardFill(),
+        border = BorderStroke(1.dp, sourceCardBorder())
     ) {
         Column(
             modifier = Modifier
@@ -3171,8 +3258,8 @@ private fun AppInfoArchCard(abis: List<String>) {
             .clip(shape)
             .clickable(enabled = displayAbis.size > 1) { expanded = !expanded },
         shape = shape,
-        color = Color(SourceCardFill),
-        border = BorderStroke(1.dp, Color(SourceCardBorder))
+        color = sourceCardFill(),
+        border = BorderStroke(1.dp, sourceCardBorder())
     ) {
         Column(
             modifier = Modifier
@@ -3676,8 +3763,17 @@ private fun SourceGrid(
     }
 }
 
-private const val SourceCardFill = 0xFF1C1E22
-private const val SourceCardBorder = 0xFF2A2D33
+// Tracks the active dark/light state (themeMode-aware) so non-scheme helpers
+// like the source-card fill can adapt with the rest of the UI.
+private var helperDarkTheme by mutableStateOf(true)
+
+@Composable
+private fun sourceCardFill(): Color =
+    if (helperDarkTheme) Color(0xFF1C1E22) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+
+@Composable
+private fun sourceCardBorder(): Color =
+    if (helperDarkTheme) Color(0xFF2A2D33) else MaterialTheme.colorScheme.outlineVariant
 
 @Composable
 private fun SourceCard(
@@ -3696,11 +3792,11 @@ private fun SourceCard(
             .clip(shape)
             .clickable(onClick = onClick),
         shape = shape,
-        color = Color(SourceCardFill),
+        color = sourceCardFill(),
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(
             width = if (selected) 1.5.dp else 1.dp,
-            color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else Color(SourceCardBorder)
+            color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else sourceCardBorder()
         )
     ) {
         Row(
@@ -4100,7 +4196,7 @@ private fun IconTabCard(
         color = if (selected) {
             MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
         } else {
-            Color(SourceCardFill)
+            sourceCardFill()
         },
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(
@@ -4108,7 +4204,7 @@ private fun IconTabCard(
             color = if (selected) {
                 MaterialTheme.colorScheme.primary
             } else {
-                Color(SourceCardBorder)
+                sourceCardBorder()
             }
         )
     ) {

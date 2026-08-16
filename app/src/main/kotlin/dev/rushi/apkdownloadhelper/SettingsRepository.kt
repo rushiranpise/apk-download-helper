@@ -24,8 +24,28 @@ internal data class HelperSettings(
     val deleteTemporaryAfterHandoff: Boolean = true,
     val logcatLogging: Boolean = true,
     val fastMode: Boolean = false,
-    val disabledSources: Set<DownloadSource> = emptySet()
+    val disabledSources: Set<DownloadSource> = emptySet(),
+    val themeMode: ThemeMode = ThemeMode.DARK,
+    val dynamicColors: Boolean = true
 )
+
+internal enum class ThemeMode(
+    val title: String,
+    val description: String
+) {
+    SYSTEM(
+        title = "System",
+        description = "Follow the device's dark / light setting."
+    ),
+    DARK(
+        title = "Dark",
+        description = "Always use the dark theme."
+    ),
+    LIGHT(
+        title = "Light",
+        description = "Always use the light theme."
+    )
+}
 
 internal enum class DownloadLocation(
     val title: String,
@@ -102,7 +122,12 @@ internal fun Context.loadHelperSettings(): HelperSettings {
         disabledSources = prefs.getStringSet("disabled_sources", emptySet())
             .orEmpty()
             .mapNotNull { name -> DownloadSource.entries.firstOrNull { it.name == name } }
-            .toSet()
+            .toSet(),
+        themeMode = enumValueOrDefault(
+            prefs.getString("theme_mode", null),
+            ThemeMode.DARK
+        ),
+        dynamicColors = prefs.getBoolean("dynamic_colors", true)
     )
     logcatLoggingEnabled = settings.logcatLogging
     return settings
@@ -118,6 +143,8 @@ internal fun Context.saveHelperSettings(settings: HelperSettings) {
         .putBoolean("logcat_logging", settings.logcatLogging)
         .putBoolean("fast_mode", settings.fastMode)
         .putStringSet("disabled_sources", settings.disabledSources.map { it.name }.toSet())
+        .putString("theme_mode", settings.themeMode.name)
+        .putBoolean("dynamic_colors", settings.dynamicColors)
         .apply()
 }
 
