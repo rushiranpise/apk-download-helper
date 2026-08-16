@@ -3261,7 +3261,10 @@ private fun AppInfoFormatCard(
                     }
                 }
             }
-            AnimatedExpand(visible = expanded) {
+            // Plain conditional (no AnimatedVisibility): this card sits in an
+            // equal-height Row(IntrinsicSize.Min), where the expand animation's
+            // intrinsic height is measured as collapsed and clips the list.
+            if (expanded) {
                 androidx.compose.material3.HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                 )
