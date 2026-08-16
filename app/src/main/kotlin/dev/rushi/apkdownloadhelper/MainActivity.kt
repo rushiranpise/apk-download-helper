@@ -1635,6 +1635,7 @@ private fun HelperTheme(
         ThemeMode.LIGHT -> false
     }
     helperDarkTheme = dark
+    helperDynamicColors = dynamicColors && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val colorScheme = when {
         dynamicColors && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
             if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
@@ -3807,17 +3808,25 @@ private fun SourceGrid(
     }
 }
 
-// Tracks the active dark/light state (themeMode-aware) so non-scheme helpers
-// like the source-card fill can adapt with the rest of the UI.
+// Tracks the active dark/light and Material You states (themeMode-aware) so
+// non-scheme helpers like the source-card fill can adapt with the rest of the
+// UI  wallpaper-tinted surfaces when dynamic colors are on.
 private var helperDarkTheme by mutableStateOf(true)
+private var helperDynamicColors by mutableStateOf(false)
 
 @Composable
-private fun sourceCardFill(): Color =
-    if (helperDarkTheme) Color(0xFF1C1E22) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+private fun sourceCardFill(): Color = when {
+    helperDynamicColors -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+    helperDarkTheme -> Color(0xFF1C1E22)
+    else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+}
 
 @Composable
-private fun sourceCardBorder(): Color =
-    if (helperDarkTheme) Color(0xFF2A2D33) else MaterialTheme.colorScheme.outlineVariant
+private fun sourceCardBorder(): Color = when {
+    helperDynamicColors -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+    helperDarkTheme -> Color(0xFF2A2D33)
+    else -> MaterialTheme.colorScheme.outlineVariant
+}
 
 @Composable
 private fun SourceCard(
