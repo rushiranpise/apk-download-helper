@@ -13,13 +13,16 @@ This project is independent from the APK source websites listed below. Source av
 ## Features
 
 - Handles `app.morphe.manager.action.DOWNLOAD_ORIGINAL_APK` requests.
-- Shows the requested app name, package name, version, version code, format, and ABI hints.
-- Supports manual source links plus on-demand recommended/latest resolution.
-- Returns APK, APKS, APKM, or XAPK files when the selected source provides a compatible direct download.
-- Validates downloaded files before returning them to Morphe Manager.
+- Shows the requested app's real icon (Android default when not installed), name, package, version, build, format, and ABI hints in a compact stat-card header.
+- Lets you narrow the request to a single file format (APK/APKM/APKS/XAPK) when Morphe allows several.
+- **Fast Mode**: auto-searches sources in order for the exact requested version + version code and returns it to Morphe without manual taps.
+- Four version types per source: **Manual** (open the source site), **Recommended** (exact requested version), **Latest** (newest compatible), and **History** (browse every version).
+- Collapsible source grid — pick a source and the list collapses so the page stays clean.
+- Returns APK, APKS, APKM, or XAPK files when the selected source provides a compatible direct download, and validates downloaded files before returning them.
+- **In-app captcha browser**: sources that gate files behind Cloudflare-style challenges open a real WebView; the download it produces is captured back into the helper.
 - Falls back to web/manual flows when direct download is not available.
 - Keeps Play Store listing opens separate from Aurora's Play-backed download flow.
-- Includes Helper settings for download location, network access, and temporary APK cleanup.
+- Tabs in settings (Settings / Health / History / Logs) with an in-app log of every request and HTTP exchange, plus a Share button to export it for bug reports.
 
 ## Supported Sources
 
@@ -28,20 +31,32 @@ This project is independent from the APK source websites listed below. Source av
 - APKPure
 - APKCombo
 - Aptoide
+- Evozi
+- Mi9
+- APK Downloader
 - Aurora / Google Play
 - Play Store listing
 
-Not every source can provide every requested version or file format. Some sources only expose latest versions, some require manual web interaction, and some split formats may not match the patch request.
+Every source can be individually enabled or disabled from Settings → Sources. Not every source can provide every requested version or file format: some only expose latest versions, some require manual web interaction, and some split formats may not match the patch request.
 
 ## Helper Settings
 
-The helper has its own settings screen:
+The helper has a tabbed settings screen:
 
-- **Download location**: use temporary hand-off cache, or keep a validated copy in `Downloads/APK Download Helper`.
-- **Network access**: allow Wi-Fi only, mobile data only, or both Wi-Fi and mobile data.
-- **Temporary cleanup**: remove staged APKs after Morphe has had time to copy them, and clean old cache files on launch.
+- **Save downloads**: store in Helper's cache (honoring the auto-clear toggle) or keep a validated copy in `Downloads/APK Download Helper`; a storage card shows cache and Downloads sizes and clears both with one tap.
+- **Connection**: allow Wi-Fi only, mobile data only, or both Wi-Fi and mobile data.
+- **Sources**: toggle each APK source on or off — disabled sources disappear from the picker, manual links, and Fast Mode.
+- **Fast Mode**: enable auto-search of the exact requested version across sources.
+- **Logging**: mirror request/HTTP details to Logcat.
+- **Health / History / Logs** tabs: per-source health, past hand-offs, and the full in-app log.
 
 Temporary hand-off is the default because Morphe Manager copies the returned APK URI into its own private workspace before patching.
+
+## Debugging & Bug Reports
+
+When a source fails to resolve or a download stalls, the **Logs** tab shows the full story — the request data, every URL fetched, HTTP status codes, redirects, and timing — with no adb needed. Use **Share** to export the log (including the app/device info) to any app.
+
+GitHub issues use a bug report template that asks for this exported log, so reports arrive with the exact failing request and HTTP trace.
 
 ## Release Signing
 
