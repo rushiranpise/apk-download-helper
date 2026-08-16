@@ -1,0 +1,95 @@
+name: 🐛 Bug report
+description: Report a resolution or download failure so it can be debugged
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Before you start:
+
+        1. Reproduce the failure once (request the app from Morphe, or tap **Find** in Helper).
+        2. Open Helper → **Settings** → **Logs** tab.
+        3. Tap **Share** and copy/paste the exported text into the **Log output** field below.
+
+        The exported log already includes the app/device info and every HTTP request
+        Helper made (URLs, status codes, timing), which is exactly what's needed to
+        find the cause  please don't edit it.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what actually happened instead?
+      placeholder: |
+        Example: The app downloaded to 100% but was never returned to Morphe,
+        or "Requested version was not found" for an app that is on the source.
+    validations:
+      required: true
+
+  - type: input
+    id: app
+    attributes:
+      label: Which app were you requesting?
+      description: App name / package / version. Leave blank if the log covers it.
+      placeholder: "com.zhiliaoapp.musically · TikTok 46.2.3 (build 2024602030)"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Which source failed?
+      multiple: true
+      options:
+        - APKMirror
+        - Uptodown
+        - APKPure
+        - APKCombo
+        - Aptoide
+        - Evozi
+        - Mi9
+        - APK Downloader
+        - Aurora
+        - Play Store
+        - Not sure / all of them
+    validations:
+      required: false
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: What did you tap/request, in order?
+      placeholder: |
+        1. Requested <app> from Morphe (or opened Helper directly).
+        2. Selected <source> and the <Recommended/Latest/History> tab.
+        3. Tapped Find/download...
+        4. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log output
+      description: |
+        Settings → Logs → **Share**, then paste the exported text here verbatim.
+        It starts with `APK Download Helper v...` and the device line.
+      render: text
+      placeholder: |
+        APK Download Helper v1.0.1
+        Device: Example Phone · Android 15 (SDK 35)
+        ----
+        App: ...
+        Package: ...
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Screenshots, whether it works on another source, Wi-Fi vs mobile, etc.
+    validations:
+      required: false

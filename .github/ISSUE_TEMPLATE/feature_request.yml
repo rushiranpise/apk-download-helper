@@ -1,0 +1,65 @@
+name: ✨ Feature request
+description: Suggest an idea for Helper or the download sources
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! A short description of the problem you're trying
+        to solve usually lands better than a long spec  we'll figure out the
+        details together.
+
+  - type: textarea
+    id: request
+    attributes:
+      label: What would you like?
+      description: Describe the feature in one or two sentences.
+      placeholder: |
+        Example: When a source rate-limits us, automatically wait and retry
+        instead of showing "not found".
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: The real-world situation that makes this useful.
+      placeholder: |
+        Example: APKMirror blocks Helper after a few requests, so I have to
+        wait minutes before trying again.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does this belong?
+      multiple: true
+      options:
+        - Source resolution (finding versions on APKMirror/Uptodown/APKPure/APKCombo/Aptoide/...)
+        - Downloads (direct download, validation, formats)
+        - Fast Mode
+        - Settings
+        - Logs / debugging
+        - UI / look and feel
+        - Integration with Morphe
+        - Other
+    validations:
+      required: false
+
+  - type: textarea
+    id: details
+    attributes:
+      label: How should it work?
+      description: Optional  rough behavior, edge cases, or a sketch.
+    validations:
+      required: false
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Screenshots, similar apps that do this well, etc.
+    validations:
+      required: false
