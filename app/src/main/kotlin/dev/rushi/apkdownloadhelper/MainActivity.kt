@@ -883,7 +883,8 @@ class MainActivity : ComponentActivity() {
                 request = pending.request,
                 candidate = pending.candidate,
                 settings = pending.settings,
-                requestIntentExtras = intent.getExtras()
+                requestIntentExtras = intent.getExtras(),
+                fastMode = fastModeActive
             )
         )
         startForegroundService(
@@ -1255,8 +1256,8 @@ class MainActivity : ComponentActivity() {
             is DownloadJobManager.Event.ValidationMismatch -> {
                 // The download itself succeeded; only the version code differs
                 // from the request (the parser couldn't know it up front). The
-                // file is kept. Fast Mode asks the user; manual mode keeps the
-                // old hard-fail behavior.
+                // file is kept. Only Fast Mode asks the user; the check itself
+                // is gated to Fast Mode, so this else branch is defensive only.
                 val activeRequest = request
                 // Only the activity that owns this request may act on the
                 // event. A stale instance (no request, or a different request)

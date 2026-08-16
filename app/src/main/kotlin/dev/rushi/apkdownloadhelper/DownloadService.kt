@@ -80,7 +80,10 @@ internal object DownloadJobManager {
         val candidate: DownloadCandidate,
         val settings: HelperSettings,
         val requestIntentExtras: Bundle? = null,
-        val epoch: Long = 0
+        val epoch: Long = 0,
+        // Only Fast Mode asks the user about a version-code mismatch; manual
+        // downloads deliver the file as before the check existed.
+        val fastMode: Boolean = false
     )
 
     sealed interface Event {
@@ -326,7 +329,13 @@ internal class DownloadService : Service() {
         } else {
             downloadSplitArchive(candidate, files, downloadsDir)
         }
-        validateDownloadedArtifact(this, job.request, candidate, file)
+        validateDownloadedArtifact(
+            this,
+            job.request,
+            candidate,
+            file,
+            checkVersionCode = job.fastMode
+        )
         return file
     }
 
@@ -690,7 +699,8 @@ internal fun validateDownloadedArtifact(
     context: Context,
     request: HelperRequest,
     candidate: DownloadCandidate,
-    file: File
+    file: File,
+    checkVersionCode: Boolean = false
 ) {
     val shouldValidateMetadata = candidate.fileKind.lowercase(Locale.US) in setOf("apk", "apks", "apkm", "xapk") ||
         file.extension.lowercase(Locale.US) in setOf("apk", "apks", "apkm", "xapk")
@@ -728,9 +738,10 @@ internal fun validateDownloadedArtifact(
     }
 
     // Version-code-only mismatch: the file is otherwise valid, but its build
-    // differs from the request. Keep the file so the caller (Fast Mode) can
-    // ask the user whether to use it anyway.
-    if (candidate.option == CandidateOption.REQUESTED) {
+    // differs from the request. Only enforced for Fast Mode, which keeps the
+    // file and asks the user whether to use it anyway; manual downloads
+    // deliver normally.
+    if (checkVersionCode && candidate.option == CandidateOption.REQUESTED) {
         val requestedCodes = request.requestedVersionCodes +
             request.compatibleVersionCodes.filter { it > 0L }
         if (
