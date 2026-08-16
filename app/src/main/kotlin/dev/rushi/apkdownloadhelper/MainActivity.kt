@@ -2133,7 +2133,7 @@ private fun SourceHealthCard(entries: List<SourceHealthEntry>) {
 @Composable
 private fun SourceHealthRow(entry: SourceHealthEntry) {
     val (dotColor, statusText) = when (entry.status) {
-        SourceHealthStatus.Ok -> Color(0xFF66BB6A) to "Available"
+        SourceHealthStatus.Ok -> MaterialTheme.colorScheme.primary to "Available"
         SourceHealthStatus.Checking -> Color(0xFFFFD166) to "Checking..."
         SourceHealthStatus.Failed -> MaterialTheme.colorScheme.error to (entry.message ?: "Failed")
         SourceHealthStatus.NoResult -> MaterialTheme.colorScheme.onSurfaceVariant to "No matching candidates"
@@ -2933,7 +2933,7 @@ private fun AppInfoHeader(
 private fun AppAvatar(initial: Char) {
     val colors = listOf(
         Color(0xFF1A73E8),
-        Color(0xFF34A853),
+        Color(0xFF4C8DFF),
         Color(0xFFFBBC04),
         Color(0xFFEA4335),
         Color(0xFF4285F4),
@@ -3021,6 +3021,10 @@ private fun SourcePickerFlow(
     val pagerState = rememberPagerState(initialPage = 0) { groups.size }
     val scope = rememberCoroutineScope()
     var showHowItWorks by remember { mutableStateOf(false) }
+    // The source cards collapse by default so the page stays focused on the
+    // selected source's content; the SelectedSourceBar below always shows
+    // what's selected.
+    var sourcesExpanded by rememberSaveable { mutableStateOf(false) }
     // Version type per source, so switching sources keeps the chosen mode.
     var subTabBySource by remember { mutableStateOf<Map<DownloadSource, SourceSubTab>>(emptyMap()) }
 
@@ -3058,7 +3062,35 @@ private fun SourcePickerFlow(
                 horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SectionTitle("Download source")
+                // Tapping the title toggles the source cards.
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable { sourcesExpanded = !sourcesExpanded }
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SectionTitle("Download source")
+                    if (!sourcesExpanded) {
+                        Text(
+                            text = "· ${groups.size}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    Icon(
+                        imageVector = if (sourcesExpanded) {
+                            Icons.Outlined.ExpandLess
+                        } else {
+                            Icons.Outlined.ExpandMore
+                        },
+                        contentDescription = if (sourcesExpanded) "Collapse sources" else "Expand sources",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
                 Spacer(Modifier.weight(1f))
                 Text(
                     text = "How it works",
@@ -3071,30 +3103,34 @@ private fun SourcePickerFlow(
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
-            if (showHowItWorks) {
-                InfoCard(
-                    "Pick a source, then a version type. The helper finds the version, " +
-                        "downloads it, validates it against Morphe's request, and returns it. " +
-                        "If a source gates the file behind a captcha, tap \"Solve captcha in app\" " +
-                        " a real browser opens and any download it produces is captured back."
+            if (sourcesExpanded) {
+                if (showHowItWorks) {
+                    InfoCard(
+                        "Pick a source, then a version type. The helper finds the version, " +
+                            "downloads it, validates it against Morphe's request, and returns it. " +
+                            "If a source gates the file behind a captcha, tap \"Solve captcha in app\" " +
+                            " a real browser opens and any download it produces is captured back."
+                    )
+                }
+                SourceGrid(
+                    groups = groups,
+                    selectedIndex = pagerState.currentPage,
+                    onSelect = { index ->
+                        scope.launch {
+                            // Slide for adjacent sources (feels like a swipe), but jump
+                            // straight to distant ones instead of dragging the pager
+                            // through every source in between.
+                            if (abs(index - pagerState.currentPage) <= 1) {
+                                pagerState.animateScrollToPage(index)
+                            } else {
+                                pagerState.scrollToPage(index)
+                            }
+                        }
+                        // Keep the page clean: collapse the grid after picking.
+                        sourcesExpanded = false
+                    }
                 )
             }
-            SourceGrid(
-                groups = groups,
-                selectedIndex = pagerState.currentPage,
-                onSelect = { index ->
-                    scope.launch {
-                        // Slide for adjacent sources (feels like a swipe), but jump
-                        // straight to distant ones instead of dragging the pager
-                        // through every source in between.
-                        if (abs(index - pagerState.currentPage) <= 1) {
-                            pagerState.animateScrollToPage(index)
-                        } else {
-                            pagerState.scrollToPage(index)
-                        }
-                    }
-                }
-            )
         }
 
         SelectedSourceBar(source = currentGroup.source)
@@ -3282,7 +3318,6 @@ private fun SourceGrid(
 
 private const val SourceCardFill = 0xFF1C1E22
 private const val SourceCardBorder = 0xFF2A2D33
-private const val VerifiedGreen = 0xFF34A853
 
 @Composable
 private fun SourceCard(
@@ -3305,7 +3340,7 @@ private fun SourceCard(
         contentColor = MaterialTheme.colorScheme.onSurface,
         border = BorderStroke(
             width = if (selected) 1.5.dp else 1.dp,
-            color = if (selected) Color(VerifiedGreen).copy(alpha = 0.6f) else Color(SourceCardBorder)
+            color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f) else Color(SourceCardBorder)
         )
     ) {
         Row(
@@ -3332,7 +3367,7 @@ private fun SourceCard(
                     Icon(
                         imageVector = Icons.Outlined.CheckCircle,
                         contentDescription = "Available",
-                        tint = Color(VerifiedGreen),
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(14.dp)
                     )
                 }
@@ -3381,7 +3416,7 @@ private fun RadioDot(selected: Boolean) {
         },
         contentDescription = if (selected) "Selected" else null,
         tint = if (selected) {
-            Color(VerifiedGreen)
+            MaterialTheme.colorScheme.primary
         } else {
             MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
         },
@@ -3591,10 +3626,6 @@ private fun SourcePageContent(
 
         when (safeTab) {
             SourceSubTab.Manual -> {
-                InfoCard(
-                    "Manual: open the link to download this app from the source's site, " +
-                        "then tap \"Select downloaded file\" to return it to Morphe."
-                )
                 group.manual.forEach { candidate ->
                     CandidateCard(
                         request = request,
@@ -3609,10 +3640,6 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.Recommended -> {
-                InfoCard(
-                    "Recommended: finds the exact version Morphe requested on this source, " +
-                        "then download it to return to Morphe."
-                )
                 CandidateResolveSection(
                     request = request,
                     state = group.recommended,
@@ -3633,12 +3660,7 @@ private fun SourcePageContent(
                     DownloadSource.PLAY -> {
                         InfoCard("Play opens the official Play Store listing for this app. Use Manual mode if you need a specific version.")
                     }
-                    else -> {
-                        InfoCard(
-                            "Latest: finds the newest version of this app on the source, " +
-                                "then download it to return to Morphe."
-                        )
-                    }
+                    else -> Unit
                 }
                 CandidateResolveSection(
                     request = request,
@@ -3653,10 +3675,6 @@ private fun SourcePageContent(
             }
 
             SourceSubTab.History -> {
-                InfoCard(
-                    "Version history: lists every version this source offers, " +
-                        "then download any of them to return to Morphe."
-                )
                 VersionHistorySection(
                     state = group.history,
                     onDownloadVersion = onDownloadVersion,
