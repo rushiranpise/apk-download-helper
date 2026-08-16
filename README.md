@@ -19,6 +19,8 @@ This project is independent from the APK source websites listed below. Source av
 - Four version types per source: **Manual** (open the source site), **Recommended** (exact requested version), **Latest** (newest compatible), and **History** (browse every version).
 - Collapsible source grid — pick a source and the list collapses so the page stays clean.
 - Returns APK, APKS, APKM, or XAPK files when the selected source provides a compatible direct download, and validates downloaded files before returning them.
+- Shows **live download speed and ETA** in the progress notification and the in-app card (`38% · 6.3 MB/s · 0:55 left`).
+- **Themes**: dark, light, or follow-the-system, plus an optional **Material You** mode that tints accents and card surfaces from the wallpaper (Android 12+). A quick theme toggle sits in the home header, no need to open Settings.
 - **In-app captcha browser**: sources that gate files behind Cloudflare-style challenges open a real WebView; the download it produces is captured back into the helper.
 - Falls back to web/manual flows when direct download is not available.
 - Keeps Play Store listing opens separate from Aurora's Play-backed download flow.
@@ -47,6 +49,7 @@ The helper has a tabbed settings screen:
 - **Connection**: allow Wi-Fi only, mobile data only, or both Wi-Fi and mobile data.
 - **Sources**: toggle each APK source on or off — disabled sources disappear from the picker, manual links, and Fast Mode.
 - **Fast Mode**: enable auto-search of the exact requested version across sources.
+- **Appearance**: pick **System / Dark / Light** and toggle **Material You colors** (wallpaper-tinted accents and surfaces on Android 12+).
 - **Logging**: mirror request/HTTP details to Logcat.
 - **Health / History / Logs** tabs: per-source health, past hand-offs, and the full in-app log.
 
