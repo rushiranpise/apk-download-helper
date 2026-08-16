@@ -23,7 +23,8 @@ internal data class HelperSettings(
     val networkPolicy: NetworkPolicy = NetworkPolicy.WIFI_AND_MOBILE,
     val deleteTemporaryAfterHandoff: Boolean = true,
     val logcatLogging: Boolean = true,
-    val fastMode: Boolean = false
+    val fastMode: Boolean = false,
+    val disabledSources: Set<DownloadSource> = emptySet()
 )
 
 internal enum class DownloadLocation(
@@ -97,7 +98,11 @@ internal fun Context.loadHelperSettings(): HelperSettings {
         ),
         deleteTemporaryAfterHandoff = prefs.getBoolean("delete_temporary_after_handoff", true),
         logcatLogging = prefs.getBoolean("logcat_logging", true),
-        fastMode = prefs.getBoolean("fast_mode", false)
+        fastMode = prefs.getBoolean("fast_mode", false),
+        disabledSources = prefs.getStringSet("disabled_sources", emptySet())
+            .orEmpty()
+            .mapNotNull { name -> DownloadSource.entries.firstOrNull { it.name == name } }
+            .toSet()
     )
     logcatLoggingEnabled = settings.logcatLogging
     return settings
@@ -112,6 +117,7 @@ internal fun Context.saveHelperSettings(settings: HelperSettings) {
         .putBoolean("delete_temporary_after_handoff", settings.deleteTemporaryAfterHandoff)
         .putBoolean("logcat_logging", settings.logcatLogging)
         .putBoolean("fast_mode", settings.fastMode)
+        .putStringSet("disabled_sources", settings.disabledSources.map { it.name }.toSet())
         .apply()
 }
 

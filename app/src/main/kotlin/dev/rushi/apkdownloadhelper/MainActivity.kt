@@ -370,7 +370,10 @@ class MainActivity : ComponentActivity() {
     private fun loadCandidates() {
         val activeRequest = request ?: return
         uiState = UiState.Ready(initialCandidateResult(activeRequest))
-        appendLog("Ready. Manual links prepared for ${DownloadSource.entries.size} sources.")
+        appendLog(
+            "Ready. Manual links prepared for " +
+                "${DownloadSource.entries.count { it !in helperSettings.disabledSources }} sources."
+        )
     }
 
     private fun resolveCandidates(source: DownloadSource, option: CandidateOption) {
@@ -578,8 +581,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateHelperSettings(settings: HelperSettings) {
+        val sourcesChanged = helperSettings.disabledSources != settings.disabledSources
         helperSettings = settings
         saveHelperSettings(settings)
+        // Rebuild the picker so enabled/disabled sources take effect immediately.
+        if (sourcesChanged && request != null && uiState is UiState.Ready) {
+            uiState = UiState.Ready(initialCandidateResult(request!!))
+        }
         lifecycleScope.launch(Dispatchers.IO) {
             cleanupTemporaryDownloads(settings)
         }
@@ -588,7 +596,9 @@ class MainActivity : ComponentActivity() {
     private fun initialCandidateResult(request: HelperRequest): CandidateResult {
         val manual = manualCandidates(request)
         return CandidateResult(
-            sourceGroups = DownloadSource.entries.map { source ->
+            sourceGroups = DownloadSource.entries
+                .filter { it !in helperSettings.disabledSources }
+                .map { source ->
                 SourceCandidateGroup(
                     source = source,
                     manual = manual.filter { it.source == source },
@@ -775,6 +785,7 @@ class MainActivity : ComponentActivity() {
 
     private fun manualSourceUrls(request: HelperRequest): List<Pair<DownloadSource, String>> =
         parsers.values
+            .filter { it.source !in helperSettings.disabledSources }
             .mapNotNull { parser ->
                 parser.searchUrl(request.packageName)?.let { parser.source to it }
             }
@@ -925,6 +936,7 @@ class MainActivity : ComponentActivity() {
         fastModeActive = true
         fastModeQueue = DownloadSource.entries
             .filter { it !in NON_FAST_MODE_SOURCES }
+            .filter { it !in helperSettings.disabledSources }
             .toMutableList()
         appendLog("Fast Mode: auto-searching sources for the exact requested version.", LogLevel.Info)
         uiState = UiState.FastMode(FastModeProgress(detail = "Auto-searching sources…"))
@@ -2420,6 +2432,26 @@ private fun HelperSettingsCard(
             }
         }
 
+        SettingsGroupCard("Sources") {
+            DownloadSource.entries.forEach { source ->
+                SourceToggleRow(
+                    source = source,
+                    enabled = source !in settings.disabledSources,
+                    onToggle = { on ->
+                        onSettingsChange(
+                            settings.copy(
+                                disabledSources = if (on) {
+                                    settings.disabledSources - source
+                                } else {
+                                    settings.disabledSources + source
+                                }
+                            )
+                        )
+                    }
+                )
+            }
+        }
+
         SettingsGroupCard("Fast Mode") {
             SettingSwitchRow(
                 icon = Icons.Outlined.Bolt,
@@ -2714,6 +2746,51 @@ private fun SettingSwitchRow(
 }
 
 @Composable
+private fun SourceToggleRow(
+    source: DownloadSource,
+    enabled: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(HelperDefaults.CardCornerRadius)
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = shape,
+        color = Color(SourceCardFill),
+        border = BorderStroke(1.dp, Color(SourceCardBorder))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            SourceAvatar(source = source, size = 32.dp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(
+                    text = source.label,
+                    fontWeight = FontWeight.Bold,
+                    color = if (enabled) colors.onSurface else colors.onSurfaceVariant.copy(alpha = 0.7f)
+                )
+                Text(
+                    text = if (enabled) "Enabled" else "Disabled",
+                    color = colors.onSurfaceVariant.copy(alpha = 0.8f),
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            Switch(
+                checked = enabled,
+                onCheckedChange = onToggle
+            )
+        }
+    }
+}
+
+@Composable
 private fun EmptyLaunchState(onOpenMorphe: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)) {
         InfoCard("Open this helper from Morphe Manager when it asks for an original APK.")
@@ -2926,13 +3003,29 @@ private fun SourcePickerFlow(
 ) {
     val groups = result.sourceGroups
 
+    // All sources disabled: show a hint instead of crashing on an empty pager.
+    if (groups.isEmpty()) {
+        SideEffect { onPrimaryActionChanged(null) }
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
+        ) {
+            InfoCard(
+                "All sources are disabled. Enable at least one source in " +
+                    "Settings → Sources to resolve or download."
+            )
+        }
+        return
+    }
+
     val pagerState = rememberPagerState(initialPage = 0) { groups.size }
     val scope = rememberCoroutineScope()
     var showHowItWorks by remember { mutableStateOf(false) }
     // Version type per source, so switching sources keeps the chosen mode.
     var subTabBySource by remember { mutableStateOf<Map<DownloadSource, SourceSubTab>>(emptyMap()) }
 
-    val currentGroup = groups[pagerState.currentPage]
+    // Clamp in case a source was disabled while this screen was showing.
+    val currentGroup = groups[pagerState.currentPage.coerceIn(0, groups.lastIndex)]
     val currentSubTab = subTabBySource[currentGroup.source]
         ?: defaultSubTab(currentGroup, request)
 
