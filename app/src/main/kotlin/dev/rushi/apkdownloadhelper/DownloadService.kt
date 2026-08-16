@@ -105,7 +105,7 @@ internal object DownloadJobManager {
      * Monotonic session counter, bumped on every [start]. A completion event
      * only belongs to the request session that started it, so a replayed event
      * from an earlier session (e.g. after activity recreation) can never hand
-     * an old file to a new request — even when package and version coincide
+     * an old file to a new request  even when package and version coincide
      * with the new request's pin.
      */
     @Volatile
@@ -231,7 +231,7 @@ internal class DownloadService : Service() {
                 // instance starting the same job again) must not cancel and
                 // restart the download in flight. Two jobs racing over the same
                 // files corrupts the output and lets a zombie job's Cancelled
-                // event overwrite the real completion — leaving the app stuck
+                // event overwrite the real completion  leaving the app stuck
                 // at 100% with the file never returned.
                 if (downloadJob?.isActive == true) {
                     Log.i(TAG, "Download already in progress; ignoring duplicate start.")
@@ -436,7 +436,7 @@ internal class DownloadService : Service() {
             buildProgressNotification(
                 candidate,
                 lastPostedPercent.coerceAtLeast(0),
-                "Connection issue — retrying in ${delayMs / 1000}s (attempt $attempt)"
+                "Connection issue  retrying in ${delayMs / 1000}s (attempt $attempt)"
             )
         )
     }
@@ -638,7 +638,7 @@ internal fun validateDownloadedArtifact(
         }
     }
 
-    // Wrong package or version name: the file is unusable — delete and fail.
+    // Wrong package or version name: the file is unusable  delete and fail.
     check(hardMismatches.isEmpty()) {
         file.delete()
         "Downloaded file does not match Morphe request.\n${hardMismatches.joinToString("\n")}"

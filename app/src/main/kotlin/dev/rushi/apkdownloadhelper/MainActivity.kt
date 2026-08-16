@@ -61,7 +61,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.BugReport
@@ -70,10 +72,14 @@ import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.OpenInBrowser
+import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.SaveAlt
+import androidx.compose.material.icons.outlined.SdStorage
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.SignalCellularAlt
 import androidx.compose.material.icons.outlined.RadioButtonChecked
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Share
@@ -81,6 +87,7 @@ import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material.icons.outlined.Wifi
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -892,7 +899,7 @@ class MainActivity : ComponentActivity() {
                 appendLog("Could not open Morphe Manager.", LogLevel.Error)
             }
         } else {
-            appendLog("Morphe Manager is not installed — opening morphe.software.", LogLevel.Warning)
+            appendLog("Morphe Manager is not installed  opening morphe.software.", LogLevel.Warning)
             val releases = Intent(
                 Intent.ACTION_VIEW,
                 Uri.parse(MORPHE_MANAGER_SITE_URL)
@@ -922,7 +929,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun cancelFastMode() {
-        appendLog("Fast Mode cancelled — taking over manually.", LogLevel.Warning)
+        appendLog("Fast Mode cancelled  taking over manually.", LogLevel.Warning)
         fastModeActive = false
         fastModeQueue = null
         // Unblock a pending "use this version?" question so the loop exits.
@@ -965,13 +972,13 @@ class MainActivity : ComponentActivity() {
                     val candidate = result.candidate
                     appendLog(
                         "Fast Mode: found ${candidate.versionDisplay} on ${source.label} " +
-                            "(${candidate.fileKind.uppercase(Locale.US)}) — downloading.",
+                            "(${candidate.fileKind.uppercase(Locale.US)})  downloading.",
                         LogLevel.Info
                     )
                     uiState = UiState.FastMode(
                         FastModeProgress(
                             sourceLabel = source.label,
-                            detail = "Found ${candidate.versionDisplay} — downloading…",
+                            detail = "Found ${candidate.versionDisplay}  downloading…",
                             percent = 0
                         )
                     )
@@ -981,7 +988,7 @@ class MainActivity : ComponentActivity() {
                 is FastModeFindResult.VersionMismatch -> {
                     val candidate = result.candidate
                     appendLog(
-                        "Fast Mode: ${source.label} has ${candidate.versionDisplay} — " +
+                        "Fast Mode: ${source.label} has ${candidate.versionDisplay}  " +
                             "build differs from requested ${request.versionCodeSummary ?: "version"}. Asking the user.",
                         LogLevel.Warning
                     )
@@ -992,7 +999,7 @@ class MainActivity : ComponentActivity() {
                             sourceLabel = source.label,
                             detail = "Version code mismatch",
                             awaitingDecision = true,
-                            mismatchDetail = "Requested build ${request.versionCodeSummary ?: "?"} — " +
+                            mismatchDetail = "Requested build ${request.versionCodeSummary ?: "?"}  " +
                                 "${source.label} has ${candidate.versionDisplay}."
                         )
                     )
@@ -1007,14 +1014,14 @@ class MainActivity : ComponentActivity() {
                         uiState = UiState.FastMode(
                             FastModeProgress(
                                 sourceLabel = source.label,
-                                detail = "Found ${candidate.versionDisplay} — downloading…",
+                                detail = "Found ${candidate.versionDisplay}  downloading…",
                                 percent = 0
                             )
                         )
                         downloadAndReturn(candidate)
                         return
                     }
-                    appendLog("Fast Mode: user skipped ${source.label} — trying the next source.", LogLevel.Info)
+                    appendLog("Fast Mode: user skipped ${source.label}  trying the next source.", LogLevel.Info)
                     continue
                 }
                 FastModeFindResult.None -> {
@@ -1049,13 +1056,13 @@ class MainActivity : ComponentActivity() {
             // Format differences are fine, but the exact version name AND
             // version code are both required. A candidate that reports a code
             // outside the request is surfaced as a mismatch the user can
-            // accept or skip — never silently downloaded.
+            // accept or skip  never silently downloaded.
             candidate.directDownload &&
                 request.matchesRequestedVersionStrict(candidate.versionName, candidate.versionCode)
         }
         if (exact != null) return FastModeFindResult.Exact(exact)
 
-        // The version name exists on this source but with a different build —
+        // The version name exists on this source but with a different build 
         // hand it to the loop so it can ask the user before proceeding.
         val mismatch = outcome.candidates.firstOrNull { candidate ->
             candidate.directDownload &&
@@ -1095,7 +1102,7 @@ class MainActivity : ComponentActivity() {
                 // the session currently in flight (same package, same epoch);
                 // otherwise discard it so the old file is never handed to a
                 // different request. The version is intentionally NOT checked
-                // here — the user may have deliberately downloaded a different
+                // here  the user may have deliberately downloaded a different
                 // version (e.g. the Latest tab) in this session, and that file
                 // must still be returned instead of leaving the UI stuck at
                 // 100%.
@@ -1106,7 +1113,7 @@ class MainActivity : ComponentActivity() {
                             "Download is ready; ${event.result.callerPackage} can request it again to receive the file.",
                             LogLevel.Warning
                         )
-                        // Opened standalone with no caller to return to — keep the
+                        // Opened standalone with no caller to return to  keep the
                         // Fast Mode card showing the result and the source list
                         // reachable beneath it.
                         val wasFastMode = fastModeActive
@@ -1137,7 +1144,7 @@ class MainActivity : ComponentActivity() {
                         LogLevel.Warning
                     )
                     // The stuck-at-100% symptom is gone once a terminal event
-                    // always lands somewhere — but if the UI is still showing a
+                    // always lands somewhere  but if the UI is still showing a
                     // stale in-flight download, reset it so the user is never
                     // left frozen on a progress bar.
                     if (uiState is UiState.Downloading) {
@@ -1149,7 +1156,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                // The event has been observed (or discarded) — clear it so a
+                // The event has been observed (or discarded)  clear it so a
                 // future activity recreation cannot replay it into a new
                 // request session.
                 DownloadJobManager.clearEvent()
@@ -1160,7 +1167,7 @@ class MainActivity : ComponentActivity() {
                     val activeRequest = request
                     if (activeRequest != null && !fastModeQueue.isNullOrEmpty()) {
                         appendLog(
-                            "Fast Mode: ${event.candidate.source.label} did not work — trying the next source.",
+                            "Fast Mode: ${event.candidate.source.label} did not work  trying the next source.",
                             LogLevel.Warning
                         )
                         lifecycleScope.launch { fastModeNext(activeRequest) }
@@ -1193,14 +1200,14 @@ class MainActivity : ComponentActivity() {
                 val activeRequest = request
                 // Only the activity that owns this request may act on the
                 // event. A stale instance (no request, or a different request)
-                // must ignore it — and must NOT clear it first, or the owner's
+                // must ignore it  and must NOT clear it first, or the owner's
                 // collector would never see it (StateFlow conflates: a clear
                 // before the owner processes the event swallows it).
                 if (activeRequest == null || event.candidate.packageName != activeRequest.packageName) return
                 if (fastModeActive) {
                     appendLog(
                         "Fast Mode: ${event.candidate.source.label} downloaded " +
-                            "${event.candidate.versionDisplay} — build differs from requested " +
+                            "${event.candidate.versionDisplay}  build differs from requested " +
                             "${activeRequest.versionCodeSummary ?: "version"}. Asking the user.",
                         LogLevel.Warning
                     )
@@ -1211,7 +1218,7 @@ class MainActivity : ComponentActivity() {
                             sourceLabel = event.candidate.source.label,
                             detail = "Version code mismatch",
                             awaitingDecision = true,
-                            mismatchDetail = "Requested build ${activeRequest.versionCodeSummary ?: "?"} — " +
+                            mismatchDetail = "Requested build ${activeRequest.versionCodeSummary ?: "?"}  " +
                                 "${event.candidate.source.label} downloaded " +
                                 "${event.candidate.versionDisplay}, found build " +
                                 "${event.foundVersionCode ?: "unknown"}."
@@ -1242,7 +1249,7 @@ class MainActivity : ComponentActivity() {
                         } else {
                             event.file.delete()
                             appendLog(
-                                "Fast Mode: user skipped ${event.candidate.source.label} — " +
+                                "Fast Mode: user skipped ${event.candidate.source.label}  " +
                                     "trying the next source.",
                                 LogLevel.Info
                             )
@@ -1277,7 +1284,7 @@ class MainActivity : ComponentActivity() {
         val pending = DownloadJobManager.readPendingResult(applicationContext) ?: return false
         // The stored result belongs to a previous request session. A new request
         // for a different app (or for a different version of the same app)
-        // invalidates it — drop the pending file and its stale "return to
+        // invalidates it  drop the pending file and its stale "return to
         // Morphe" notification so the old APK can never be handed back for the
         // new request (e.g. when the old completion notification is tapped
         // while the new request is on screen).
@@ -1552,7 +1559,6 @@ private object HelperDefaults {
     val ItemSpacing = 12.dp
     val IconSizeSmall = 20.dp
     val ButtonHeight = 52.dp
-    val ActionShowWidth = 88.dp
     val ActionClearWidth = 96.dp
 }
 
@@ -1756,7 +1762,7 @@ private fun CaptchaBrowserScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Solve captcha — ${candidate.source.label}",
+                        text = "Solve captcha  ${candidate.source.label}",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
@@ -2067,7 +2073,6 @@ private fun HelperScreen(
 private fun SourceHealthCard(entries: List<SourceHealthEntry>) {
     val hasFailures = entries.any { it.status == SourceHealthStatus.Failed }
     val hasActivity = entries.any { it.status == SourceHealthStatus.Checking }
-    var expanded by remember(hasFailures) { mutableStateOf(hasFailures) }
     val failedCount = entries.count { it.status == SourceHealthStatus.Failed }
     val okCount = entries.count { it.status == SourceHealthStatus.Ok }
 
@@ -2083,44 +2088,26 @@ private fun SourceHealthCard(entries: List<SourceHealthEntry>) {
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
-            ) {
-                Text(
-                    text = "Source health",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = summary,
-                    color = if (hasFailures) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            HelperOutlinedButton(
-                text = if (expanded) "Hide" else "Show",
-                onClick = { expanded = !expanded },
-                modifier = Modifier.width(HelperDefaults.ActionShowWidth)
-            )
-        }
-
-        if (expanded) {
-            if (entries.isEmpty()) {
-                InfoCard("No sources checked yet. Resolve candidates on the main screen to see per-source health here.")
+        Text(
+            text = "Source health",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = summary,
+            color = if (hasFailures) {
+                MaterialTheme.colorScheme.error
             } else {
-                entries.forEach { entry ->
-                    SourceHealthRow(entry)
-                }
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            style = MaterialTheme.typography.bodySmall
+        )
+
+        if (entries.isEmpty()) {
+            InfoCard("No sources checked yet. Resolve candidates on the main screen to see per-source health here.")
+        } else {
+            entries.forEach { entry ->
+                SourceHealthRow(entry)
             }
         }
     }
@@ -2271,6 +2258,7 @@ private fun HelperSettingsScreen(
 ) {
     val context = LocalContext.current
     val swipeThresholdPx = with(LocalDensity.current) { 72.dp.toPx() }
+    var tab by rememberSaveable { mutableStateOf(SettingsTab.Settings) }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -2324,30 +2312,45 @@ private fun HelperSettingsScreen(
         }
 
         item {
-            HelperSettingsCard(
-                settings = settings,
-                onSettingsChange = onSettingsChange
+            SettingsTabRow(
+                selected = tab,
+                onSelect = { tab = it }
             )
         }
 
-        item {
-            SourceHealthCard(healthEntries)
+        if (tab == SettingsTab.Settings) {
+            item {
+                HelperSettingsCard(
+                    settings = settings,
+                    onSettingsChange = onSettingsChange
+                )
+            }
         }
 
-        item {
-            DownloadHistorySection(
-                entries = historyEntries,
-                onClear = onClearHistory,
-                onOpen = onOpenHistoryEntry,
-                onShare = onShareHistoryEntry
-            )
+        if (tab == SettingsTab.Health) {
+            item {
+                SourceHealthCard(healthEntries)
+            }
         }
 
-        item {
-            RequestLogsCard(
-                logs = logs,
-                onClearLogs = onClearLogs
-            )
+        if (tab == SettingsTab.History) {
+            item {
+                DownloadHistorySection(
+                    entries = historyEntries,
+                    onClear = onClearHistory,
+                    onOpen = onOpenHistoryEntry,
+                    onShare = onShareHistoryEntry
+                )
+            }
+        }
+
+        if (tab == SettingsTab.Logs) {
+            item {
+                RequestLogsCard(
+                    logs = logs,
+                    onClearLogs = onClearLogs
+                )
+            }
         }
     }
 }
@@ -2359,6 +2362,7 @@ private fun HelperSettingsCard(
 ) {
     val context = LocalContext.current
     var cacheBytes by remember(context) { mutableStateOf(context.temporaryDownloadsSize()) }
+    var downloadsBytes by remember(context) { mutableStateOf(context.downloadsCopySize()) }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -2366,7 +2370,8 @@ private fun HelperSettingsCard(
     ) {
         SettingsGroupCard("Save downloads") {
             DownloadLocation.entries.forEach { location ->
-                SettingsChoiceRow(
+                SettingsOptionCard(
+                    icon = location.icon(),
                     title = location.title,
                     description = location.description,
                     selected = settings.downloadLocation == location,
@@ -2375,14 +2380,18 @@ private fun HelperSettingsCard(
                     }
                 )
             }
-            SettingsClearRow(
-                sizeBytes = cacheBytes,
+            SettingsStorageCard(
+                cacheBytes = cacheBytes,
+                downloadsBytes = downloadsBytes,
                 onClear = {
                     context.clearTemporaryDownloads()
+                    context.clearDownloadsCopies()
                     cacheBytes = 0L
+                    downloadsBytes = 0L
                 }
             )
             SettingSwitchRow(
+                icon = Icons.Outlined.CleaningServices,
                 title = "Auto-clear after hand-off",
                 description = "Remove temporary APKs after handing off to Morphe, and clear old cache files on launch.",
                 checked = settings.deleteTemporaryAfterHandoff,
@@ -2394,7 +2403,8 @@ private fun HelperSettingsCard(
 
         SettingsGroupCard("Connection") {
             NetworkPolicy.entries.forEach { policy ->
-                SettingsChoiceRow(
+                SettingsOptionCard(
+                    icon = policy.icon(),
                     title = policy.title,
                     description = policy.description,
                     selected = settings.networkPolicy == policy,
@@ -2407,6 +2417,7 @@ private fun HelperSettingsCard(
 
         SettingsGroupCard("Fast Mode") {
             SettingSwitchRow(
+                icon = Icons.Outlined.Bolt,
                 title = "Fast Mode",
                 description = "Auto-find the exact requested version and version code across sources " +
                     "(APKMirror, Uptodown, APKPure, APKCombo, Aptoide) and return it to Morphe automatically. " +
@@ -2420,6 +2431,7 @@ private fun HelperSettingsCard(
 
         SettingsGroupCard("Logging") {
             SettingSwitchRow(
+                icon = Icons.Outlined.BugReport,
                 title = "Log to Logcat",
                 description = "Write request, result, and source HTTP details to the system log (adb logcat) for debugging.",
                 checked = settings.logcatLogging,
@@ -2447,49 +2459,66 @@ private fun SettingsGroupCard(
     }
 }
 
+private fun DownloadLocation.icon(): ImageVector = when (this) {
+    DownloadLocation.TEMPORARY -> Icons.Outlined.SdStorage
+    DownloadLocation.DOWNLOADS -> Icons.Outlined.SaveAlt
+}
+
+private fun NetworkPolicy.icon(): ImageVector = when (this) {
+    NetworkPolicy.WIFI_ONLY -> Icons.Outlined.Wifi
+    NetworkPolicy.MOBILE_DATA_ONLY -> Icons.Outlined.SignalCellularAlt
+    NetworkPolicy.WIFI_AND_MOBILE -> Icons.Outlined.NetworkCheck
+}
+
 @Composable
-private fun SettingsChoiceRow(
+private fun SettingsOptionCard(
+    icon: ImageVector,
     title: String,
     description: String,
     selected: Boolean,
     onClick: () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
-    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    val shape = RoundedCornerShape(HelperDefaults.CardCornerRadius)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clip(shape)
             .clickable(onClick = onClick),
         shape = shape,
-        // Stay on the dark card style; the selected state is a subtle primary
-        // tint + border + check icon instead of a solid light fill that clashes
-        // with the dark theme.
+        // Matches the home screen's source cards: dark fill + hairline border,
+        // with the selected option getting a primary tint + border + radio dot.
         color = if (selected) {
-            colors.primary.copy(alpha = 0.13f)
+            colors.primary.copy(alpha = 0.16f)
         } else {
-            colors.surfaceColorAtElevation(2.dp)
+            Color(SourceCardFill)
         },
         contentColor = colors.onSurface,
         border = BorderStroke(
-            1.dp,
-            if (selected) {
-                colors.primary.copy(alpha = 0.55f)
+            width = if (selected) 1.5.dp else 1.dp,
+            color = if (selected) {
+                colors.primary
             } else {
-                colors.outlineVariant.copy(alpha = 0.45f)
+                Color(SourceCardBorder)
             }
         )
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(HelperDefaults.ContentPadding),
-            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (selected) colors.primary else colors.onSurfaceVariant,
+                modifier = Modifier.size(22.dp)
+            )
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 Text(
                     title,
@@ -2503,60 +2532,111 @@ private fun SettingsChoiceRow(
                     } else {
                         colors.onSurfaceVariant
                     },
-                    style = MaterialTheme.typography.bodyMedium
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
-            if (selected) {
-                Icon(
-                    imageVector = Icons.Outlined.CheckCircle,
-                    contentDescription = "Selected",
-                    tint = colors.primary
-                )
-            }
+            RadioDot(selected = selected)
         }
     }
 }
 
 @Composable
-private fun SettingsClearRow(
-    sizeBytes: Long,
+private fun SettingsStorageCard(
+    cacheBytes: Long,
+    downloadsBytes: Long,
     onClear: () -> Unit
 ) {
-    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    val shape = RoundedCornerShape(HelperDefaults.CardCornerRadius)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = shape,
-        color = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+        color = Color(SourceCardFill),
+        border = BorderStroke(1.dp, Color(SourceCardBorder))
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(HelperDefaults.ContentPadding),
-            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Clear storage, cache & downloads", fontWeight = FontWeight.Bold)
-                Text(
-                    text = if (sizeBytes > 0L) {
-                        "${sizeBytes.formatBytes()} in cache — tap Clear to remove it now."
-                    } else {
-                        "Cache is empty — nothing to clear."
-                    },
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium
+                Icon(
+                    imageVector = Icons.Outlined.DeleteOutline,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(22.dp)
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text("Clear storage, cache & downloads", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "Removes both the cache copies and the visible Downloads copies.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                HelperOutlinedButton(
+                    text = "Clear",
+                    onClick = onClear,
+                    modifier = Modifier.widthIn(min = 96.dp)
                 )
             }
-            HelperOutlinedButton(
-                text = "Clear",
-                onClick = onClear,
-                modifier = Modifier.widthIn(min = 96.dp)
+            androidx.compose.material3.HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+            )
+            StorageInfoLine(
+                icon = Icons.Outlined.SdStorage,
+                label = "Helper cache",
+                sizeBytes = cacheBytes
+            )
+            StorageInfoLine(
+                icon = Icons.Outlined.FolderOpen,
+                label = "Downloads copy",
+                sizeBytes = downloadsBytes
             )
         }
+    }
+}
+
+@Composable
+private fun StorageInfoLine(
+    icon: ImageVector,
+    label: String,
+    sizeBytes: Long
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f)
+        )
+        Text(
+            text = sizeBytes.formatBytes(),
+            fontWeight = FontWeight.Bold,
+            color = if (sizeBytes > 0L) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            },
+            style = MaterialTheme.typography.bodyMedium
+        )
     }
 }
 
@@ -2574,34 +2654,50 @@ private fun Long.formatBytes(): String {
 
 @Composable
 private fun SettingSwitchRow(
+    icon: ImageVector,
     title: String,
     description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(HelperDefaults.CardCornerRadius)
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = shape,
-        color = MaterialTheme.colorScheme.surfaceColorAtElevation(2.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+        // Like the option cards: the switch card tints when the toggle is on.
+        color = if (checked) colors.primary.copy(alpha = 0.16f) else Color(SourceCardFill),
+        border = BorderStroke(
+            width = if (checked) 1.5.dp else 1.dp,
+            color = if (checked) colors.primary else Color(SourceCardBorder)
+        )
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(HelperDefaults.ContentPadding),
-            horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (checked) colors.primary else colors.onSurfaceVariant,
+                modifier = Modifier.size(22.dp)
+            )
             Column(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                Text(title, fontWeight = FontWeight.Bold)
+                Text(
+                    title,
+                    fontWeight = FontWeight.Bold,
+                    color = if (checked) colors.primary else colors.onSurface
+                )
                 Text(
                     description,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium
+                    color = colors.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
                 )
             }
             Switch(
@@ -2882,7 +2978,7 @@ private fun SourcePickerFlow(
                     "Pick a source, then a version type. The helper finds the version, " +
                         "downloads it, validates it against Morphe's request, and returns it. " +
                         "If a source gates the file behind a captcha, tap \"Solve captcha in app\" " +
-                        "— a real browser opens and any download it produces is captured back."
+                        " a real browser opens and any download it produces is captured back."
                 )
             }
             SourceGrid(
@@ -3501,6 +3597,24 @@ private fun VersionTypeCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    IconTabCard(
+        label = tab.label,
+        icon = tab.icon,
+        selected = selected,
+        onClick = onClick,
+        modifier = modifier
+    )
+}
+
+/** Icon + label card used for tab rows (home version types and settings tabs). */
+@Composable
+private fun IconTabCard(
+    label: String,
+    icon: ImageVector,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
     val shape = RoundedCornerShape(16.dp)
     Surface(
         modifier = modifier
@@ -3530,7 +3644,7 @@ private fun VersionTypeCard(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Icon(
-                imageVector = tab.icon,
+                imageVector = icon,
                 contentDescription = null,
                 tint = if (selected) {
                     MaterialTheme.colorScheme.primary
@@ -3540,7 +3654,7 @@ private fun VersionTypeCard(
                 modifier = Modifier.size(20.dp)
             )
             Text(
-                text = tab.label,
+                text = label,
                 fontWeight = FontWeight.Bold,
                 style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
@@ -3551,6 +3665,37 @@ private fun VersionTypeCard(
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 }
+            )
+        }
+    }
+}
+
+private enum class SettingsTab(
+    val label: String,
+    val icon: ImageVector
+) {
+    Settings("Settings", Icons.Outlined.Tune),
+    Health("Health", Icons.Outlined.VerifiedUser),
+    History("History", Icons.Outlined.History),
+    Logs("Logs", Icons.Outlined.BugReport)
+}
+
+@Composable
+private fun SettingsTabRow(
+    selected: SettingsTab,
+    onSelect: (SettingsTab) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        SettingsTab.entries.forEach { tab ->
+            IconTabCard(
+                label = tab.label,
+                icon = tab.icon,
+                selected = tab == selected,
+                onClick = { onSelect(tab) },
+                modifier = Modifier.weight(1f)
             )
         }
     }
@@ -3575,7 +3720,7 @@ private fun AboutModeCard(tab: SourceSubTab) {
         SourceSubTab.Latest ->
             "Finds the newest compatible version from the selected source and downloads it."
         SourceSubTab.History ->
-            "Lists every version this source offers — pick any of them and download it."
+            "Lists every version this source offers  pick any of them and download it."
     }
     HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -3686,13 +3831,13 @@ private fun VersionHistoryRow(
                         // browsed in the in-app captcha browser, not downloaded.
                         candidate.captchaUrl != null && !candidate.directDownload ->
                             "Browsable in the in-app browser (version history)"
-                        showOpenLink -> "No direct download — open the version page"
+                        showOpenLink -> "No direct download  open the version page"
                         // History rows know only the version page until the
                         // user taps Download, which resolves the real format.
                         // "web" is a placeholder, not an actual file type, so
                         // don't render it as if the row just links out.
                         candidate.fileKind.equals("web", ignoreCase = true) ->
-                            "Direct download — format resolved on download"
+                            "Direct download  format resolved on download"
                         else -> candidate.fileKind.uppercase(Locale.US)
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -3813,7 +3958,6 @@ private fun DownloadHistorySection(
     onShare: (DownloadHistoryEntry) -> Unit
 ) {
     val context = LocalContext.current
-    var expanded by rememberSaveable { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
@@ -3834,26 +3978,19 @@ private fun DownloadHistorySection(
                 onClick = onClear,
                 modifier = Modifier.width(HelperDefaults.ActionClearWidth)
             )
-            HelperOutlinedButton(
-                text = if (expanded) "Hide" else "Show",
-                onClick = { expanded = !expanded },
-                modifier = Modifier.width(HelperDefaults.ActionShowWidth)
-            )
         }
 
-        if (expanded) {
-            if (entries.isEmpty()) {
-                InfoCard("No hand-offs recorded yet. Downloads and picked files you return to Morphe show up here.")
-            } else {
-                entries.forEach { entry ->
-                    val usable = remember(entry.uri) { context.isHistoryUriUsable(entry.uri) }
-                    HistoryEntryCard(
-                        entry = entry,
-                        usable = usable,
-                        onOpen = { onOpen(entry) },
-                        onShare = { onShare(entry) }
-                    )
-                }
+        if (entries.isEmpty()) {
+            InfoCard("No hand-offs recorded yet. Downloads and picked files you return to Morphe show up here.")
+        } else {
+            entries.forEach { entry ->
+                val usable = remember(entry.uri) { context.isHistoryUriUsable(entry.uri) }
+                HistoryEntryCard(
+                    entry = entry,
+                    usable = usable,
+                    onOpen = { onOpen(entry) },
+                    onShare = { onShare(entry) }
+                )
             }
         }
     }
@@ -3864,7 +4001,6 @@ private fun RequestLogsCard(
     logs: List<RequestLogEntry>,
     onClearLogs: () -> Unit
 ) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
@@ -3885,32 +4021,25 @@ private fun RequestLogsCard(
                 onClick = onClearLogs,
                 modifier = Modifier.width(HelperDefaults.ActionClearWidth)
             )
-            HelperOutlinedButton(
-                text = if (expanded) "Hide" else "Show",
-                onClick = { expanded = !expanded },
-                modifier = Modifier.width(HelperDefaults.ActionShowWidth)
-            )
         }
 
-        if (expanded) {
-            if (logs.isEmpty()) {
-                InfoCard("No logs yet.")
-            } else {
-                HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
-                    SelectionContainer {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(HelperDefaults.ContentPadding),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            logs.takeLast(80).forEach { entry ->
-                                Text(
-                                    text = "${entry.time} ${entry.level.badge} ${entry.message}",
-                                    color = entry.level.color(),
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
+        if (logs.isEmpty()) {
+            InfoCard("No logs yet.")
+        } else {
+            HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
+                SelectionContainer {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(HelperDefaults.ContentPadding),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        logs.takeLast(80).forEach { entry ->
+                            Text(
+                                text = "${entry.time} ${entry.level.badge} ${entry.message}",
+                                color = entry.level.color(),
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
                 }
@@ -4520,7 +4649,7 @@ internal data class HelperRequest(
      * Strict matcher used by Fast Mode, where the exact version name AND the
      * exact version code are both required. Unlike [matchesRequestedVersion]
      * (which accepts a name-only match), a candidate that reports a version
-     * code outside the requested set is rejected up front — so Fast Mode
+     * code outside the requested set is rejected up front  so Fast Mode
      * doesn't download a file that validation would reject anyway. When the
      * source doesn't report a code, the name match is accepted (validation is
      * still the backstop for the downloaded artifact).
@@ -5264,7 +5393,7 @@ internal fun Context.readDownloadedApkMetadata(file: File): DownloadedApkMetadat
         ZipFile(file).use { zip ->
             // The base APK inside split containers is not always named "base.apk":
             // some sources (e.g. APKPure XAPKs) name it after the package. Trying
-            // the first alphabetical .apk entry is wrong — config splits like
+            // the first alphabetical .apk entry is wrong  config splits like
             // config.ar.apk carry no manifest and fail to parse. Prefer the real
             // base: exact base.apk, then a name matching the package (derived from
             // the output file name), then the largest entry, and take the first
@@ -5382,8 +5511,8 @@ internal fun String?.versionNameEquals(other: String?): Boolean {
 /**
  * A downloaded result belongs to a request only when the package matches and
  * the file's version satisfies the request (or the request didn't pin one).
- * Used to stop a stale result — from a previous session's pending file or a
- * replayed [DownloadJobManager.Event.Completed] — from being handed to a
+ * Used to stop a stale result  from a previous session's pending file or a
+ * replayed [DownloadJobManager.Event.Completed]  from being handed to a
  * different request.
  */
 internal fun PendingDownloadResult.belongsTo(request: HelperRequest?): Boolean {

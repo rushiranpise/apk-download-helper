@@ -65,7 +65,7 @@ internal class EvoziParser(
     private fun requestedCandidates(request: HelperRequest): List<DownloadCandidate> {
         val requestedName = request.requestedVersionName ?: return emptyList()
         // The old-versions page lives under the app's slug path, which only the
-        // app page knows — fetch it first to learn the slug.
+        // app page knows  fetch it first to learn the slug.
         val pageUrl = searchUrl(request.packageName) ?: return emptyList()
         val html = try {
             ctx.text(pageUrl)

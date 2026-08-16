@@ -158,7 +158,7 @@ internal class ApkPureParser(private val ctx: SourceParserContext) : ApkSourcePa
 
         // The web versions page can be blocked (HTTP 410) for apps whose listing
         // APKPure removed. The update API still serves the exact requested
-        // version in that case — fall back to it before giving up.
+        // version in that case  fall back to it before giving up.
         return runCatching { apkPureApiRequestedCandidate(request) }
             .onFailure { Log.w(TAG, "APKPure requested version API resolve failed", it) }
             .getOrNull()

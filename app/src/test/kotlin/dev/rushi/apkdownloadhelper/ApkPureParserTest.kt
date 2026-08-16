@@ -62,7 +62,7 @@ class ApkPureParserTest {
             )
         )
         // Web versions page is blocked (410), but the API serves the exact
-        // requested version — the parser must fall back to the API.
+        // requested version  the parser must fall back to the API.
         val parser = ApkPureParser(
             testParserContext(
                 pages = mapOf(
@@ -115,7 +115,7 @@ class ApkPureParserTest {
             )
         )
 
-        // API returns 9.9.9 but we asked for 8.72.0 — must not return it.
+        // API returns 9.9.9 but we asked for 8.72.0  must not return it.
         val candidates = parser.findCandidates(
             request = testRequest(
                 packageName = packageName,

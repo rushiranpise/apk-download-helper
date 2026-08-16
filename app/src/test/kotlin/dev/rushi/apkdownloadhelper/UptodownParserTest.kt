@@ -99,7 +99,7 @@ class UptodownParserTest {
 
         assertEquals(1, candidates.size)
         val candidate = candidates.single()
-        // A Play Store listing is not a downloadable file — the row must fall
+        // A Play Store listing is not a downloadable file  the row must fall
         // back to opening the Uptodown page instead of offering a download.
         assertTrue(!candidate.directDownload)
         assertEquals("$detailUrl/download", candidate.url)

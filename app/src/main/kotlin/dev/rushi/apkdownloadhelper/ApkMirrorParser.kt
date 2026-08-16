@@ -284,7 +284,7 @@ internal class ApkMirrorParser(private val ctx: SourceParserContext) : ApkSource
         val segments = runCatching {
             java.net.URI(url).path.trim('/').split('/')
         }.getOrDefault(emptyList())
-        // Path layout: /apk/{developer}/{app-slug}/ — the developer segment
+        // Path layout: /apk/{developer}/{app-slug}/  the developer segment
         // alone is ambiguous when a publisher lists several editions (e.g.
         // TikTok vs its Amazon Appstore edition), so score the app segment too.
         val developerSlug = segments.getOrNull(1).orEmpty()

@@ -6,7 +6,7 @@ package dev.rushi.apkdownloadhelper
  * challenge that plain HTTP clients cannot pass (verified from both desktop
  * and mobile networks). The app still offers a real path: every candidate
  * points the in-app captcha browser at the app's version-history page, which
- * a real browser loads fine — the user picks a version there and the
+ * a real browser loads fine  the user picks a version there and the
  * download is captured back into the helper.
  */
 

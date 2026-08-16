@@ -186,7 +186,7 @@ internal class UptodownParser(private val ctx: SourceParserContext) : ApkSourceP
             // data-url-ext is the external target for apps Uptodown does not host
             // (e.g. an "external" Play Store listing like Discord). Pointing at a
             // store page is not a downloadable file, so don't treat it as a direct
-            // download — the row should fall back to opening the page instead.
+            // download  the row should fall back to opening the page instead.
             ?.takeUnless { it.isPlayStoreListing() }
             ?: uptodownDownloadUrlFromPage(doc)
         val normalizedDetailUrl = detailUrl.trimEnd('/')
