@@ -2083,6 +2083,26 @@ private fun HelperScreen(
                             ).show()
                         }
                     )
+                    HelperThemeButton(
+                        dark = when (settings.themeMode) {
+                            ThemeMode.DARK -> true
+                            ThemeMode.LIGHT -> false
+                            ThemeMode.SYSTEM -> isSystemInDarkTheme()
+                        },
+                        onToggle = {
+                            val target = if (settings.themeMode == ThemeMode.LIGHT) {
+                                ThemeMode.DARK
+                            } else {
+                                ThemeMode.LIGHT
+                            }
+                            onSettingsChange(settings.copy(themeMode = target))
+                            Toast.makeText(
+                                context,
+                                if (target == ThemeMode.LIGHT) "Light theme" else "Dark theme",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
                     HelperOutlinedButton(
                         text = "Settings",
                         onClick = {
@@ -2953,6 +2973,30 @@ private fun HelperBoltButton(
         Icon(
             imageVector = Icons.Outlined.Bolt,
             contentDescription = if (fastMode) "Fast Mode on" else "Fast Mode off",
+            modifier = Modifier.size(HelperDefaults.IconSizeSmall)
+        )
+    }
+}
+
+@Composable
+private fun HelperThemeButton(
+    dark: Boolean,
+    onToggle: () -> Unit
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    OutlinedButton(
+        onClick = onToggle,
+        modifier = Modifier.size(HelperDefaults.ButtonHeight),
+        shape = RoundedCornerShape(HelperDefaults.ButtonCornerRadius),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
+        ),
+        border = BorderStroke(1.dp, primary.copy(alpha = 0.32f)),
+        contentPadding = PaddingValues(0.dp)
+    ) {
+        Icon(
+            imageVector = if (dark) Icons.Outlined.LightMode else Icons.Outlined.DarkMode,
+            contentDescription = if (dark) "Switch to light theme" else "Switch to dark theme",
             modifier = Modifier.size(HelperDefaults.IconSizeSmall)
         )
     }
