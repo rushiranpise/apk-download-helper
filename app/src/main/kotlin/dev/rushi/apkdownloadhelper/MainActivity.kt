@@ -117,8 +117,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -2866,7 +2869,10 @@ private fun AppInfoHeader(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AppAvatar(initial = request.appName.firstOrNull()?.uppercaseChar() ?: '?')
+        AppAvatar(
+            packageName = request.packageName,
+            initial = request.appName.firstOrNull()?.uppercaseChar() ?: '?'
+        )
 
         Column(
             modifier = Modifier.weight(1f),
@@ -2930,29 +2936,53 @@ private fun AppInfoHeader(
 }
 
 @Composable
-private fun AppAvatar(initial: Char) {
-    val colors = listOf(
-        Color(0xFF1A73E8),
-        Color(0xFF4C8DFF),
-        Color(0xFFFBBC04),
-        Color(0xFFEA4335),
-        Color(0xFF4285F4),
-        Color(0xFFF25C1B)
-    )
-    val color = colors[initial.code % colors.size]
-    Box(
-        modifier = Modifier
-            .size(44.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(color.copy(alpha = 0.85f)),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = initial.toString(),
-            color = Color.White,
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
+private fun AppAvatar(packageName: String, initial: Char) {
+    val context = LocalContext.current
+    // Fetch the installed app's real icon; fall back to the letter tile when
+    // the app isn't installed (or its icon can't be read).
+    var iconBitmap by remember(packageName) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(packageName) {
+        iconBitmap = withContext(Dispatchers.IO) {
+            runCatching {
+                context.packageManager.getApplicationIcon(packageName)
+                    .toBitmap(width = 176, height = 176)
+                    .asImageBitmap()
+            }.getOrNull()
+        }
+    }
+
+    if (iconBitmap != null) {
+        Image(
+            bitmap = iconBitmap!!,
+            contentDescription = null,
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(12.dp))
         )
+    } else {
+        val colors = listOf(
+            Color(0xFF1A73E8),
+            Color(0xFF4C8DFF),
+            Color(0xFFFBBC04),
+            Color(0xFFEA4335),
+            Color(0xFF4285F4),
+            Color(0xFFF25C1B)
+        )
+        val color = colors[initial.code % colors.size]
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(color.copy(alpha = 0.85f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = initial.toString(),
+                color = Color.White,
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
     }
 }
 
