@@ -40,9 +40,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -62,6 +64,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.CleaningServices
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Download
@@ -113,6 +116,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -335,7 +344,8 @@ class MainActivity : ComponentActivity() {
                         onUseFastModeMismatch = { fastModeChoose(FastModeChoice.USE) },
                         onSkipFastModeMismatch = { fastModeChoose(FastModeChoice.NEXT) },
                         onOpenMorphe = ::openMorpheManager,
-                        onSolveCaptcha = ::openCaptchaBrowser
+                        onSolveCaptcha = ::openCaptchaBrowser,
+                        onRequestFileTypeChange = ::changeRequestedFileType
                     )
                 }
             }
@@ -581,6 +591,18 @@ class MainActivity : ComponentActivity() {
         // Single shared sink: the Logs tab and the HTTP interceptor both write
         // here, and Logcat mirroring is handled by the sink per the setting.
         AppLog.record(level, message)
+    }
+
+    private fun changeRequestedFileType(kind: String) {
+        val active = request ?: return
+        if (active.requestedFileType?.equals(kind, ignoreCase = true) == true) return
+        // Pin the request to a single format so resolution only looks for it.
+        request = active.copy(
+            requestedFileType = kind,
+            allowSplitArchive = false
+        )
+        appendLog("Request format narrowed to ${kind.uppercase(Locale.US)}.", LogLevel.Info)
+        loadCandidates()
     }
 
     private fun updateHelperSettings(settings: HelperSettings) {
@@ -1897,7 +1919,8 @@ private fun HelperScreen(
     onUseFastModeMismatch: () -> Unit,
     onSkipFastModeMismatch: () -> Unit,
     onOpenMorphe: () -> Unit,
-    onSolveCaptcha: (DownloadCandidate) -> Unit
+    onSolveCaptcha: (DownloadCandidate) -> Unit,
+    onRequestFileTypeChange: (String) -> Unit
 ) {
     var showSettings by remember { mutableStateOf(false) }
     var pendingFilePick by remember { mutableStateOf<DownloadCandidate?>(null) }
@@ -2017,7 +2040,10 @@ private fun HelperScreen(
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     SectionTitle("App info")
-                    AppInfoCard(request)
+                    AppInfoCard(
+                        request = request,
+                        onFormatSelected = onRequestFileTypeChange
+                    )
                 }
             }
             when (state) {
@@ -2839,9 +2865,10 @@ private fun HelperBoltButton(
 }
 
 @Composable
-private fun AppInfoCard(request: HelperRequest) {
-    // The header already shows version/build/format/ABI as chips, so the
-    // details render inline without an expand toggle.
+private fun AppInfoCard(
+    request: HelperRequest,
+    onFormatSelected: (String) -> Unit
+) {
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
             modifier = Modifier
@@ -2849,63 +2876,85 @@ private fun AppInfoCard(request: HelperRequest) {
                 .padding(HelperDefaults.ContentPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            AppInfoHeader(request)
+            AppInfoHeader(request, onFormatSelected)
         }
     }
 }
 
 @Composable
 private fun AppInfoHeader(
-    request: HelperRequest
+    request: HelperRequest,
+    onFormatSelected: (String) -> Unit
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
     var copied by remember(request.packageName) { mutableStateOf(false) }
+    var installed by remember(request.packageName) { mutableStateOf(false) }
+    LaunchedEffect(request.packageName) {
+        installed = withContext(Dispatchers.IO) {
+            context.isPackageInstalled(request.packageName)
+        }
+    }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        AppAvatar(
-            packageName = request.packageName,
-            initial = request.appName.firstOrNull()?.uppercaseChar() ?: '?'
-        )
-
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = request.appName,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+            AppAvatar(
+                packageName = request.packageName,
+                initial = request.appName.firstOrNull()?.uppercaseChar() ?: '?'
             )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = request.appName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (installed) {
+                        Icon(
+                            imageVector = Icons.Outlined.CheckCircle,
+                            contentDescription = "Installed",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
                         text = request.packageName,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                        overflow = TextOverflow.Ellipsis
                     )
-                    Text(
-                        text = if (copied) "Copied" else "Copy",
-                        color = if (copied) {
+                    Icon(
+                        imageVector = Icons.Outlined.ContentCopy,
+                        contentDescription = "Copy package",
+                        tint = if (copied) {
                             MaterialTheme.colorScheme.primary
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier
+                            .size(16.dp)
                             .clip(RoundedCornerShape(50))
                             .clickable {
                                 clipboard?.setPrimaryClip(
@@ -2913,40 +2962,291 @@ private fun AppInfoHeader(
                                 )
                                 copied = true
                             }
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .padding(2.dp)
                     )
                 }
+            }
+        }
 
+        // Version + Format cards side by side, same height (the build subtext
+        // would otherwise make the Version card taller).
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(IntrinsicSize.Min),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            AppInfoStatCard(
+                label = "Version",
+                value = request.requestedVersionName ?: "Any",
+                subtext = request.versionCodeSummary?.let { "build $it" },
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+            AppInfoFormatCard(
+                kinds = request.requestedFileKinds.orderedFileKinds(),
+                onSelect = onFormatSelected,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+            )
+        }
+
+        AppInfoArchCard(
+            abis = request.availableAbis
+        )
+    }
+}
+
+@Composable
+private fun AppInfoStatCard(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    subtext: String? = null
+) {
+    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    Surface(
+        modifier = modifier.clip(shape),
+        shape = shape,
+        color = Color(SourceCardFill),
+        border = BorderStroke(1.dp, Color(SourceCardBorder))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                text = label,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelSmall
+            )
+            Text(
+                text = value,
+                fontWeight = FontWeight.Bold,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            subtext?.let {
+                Text(
+                    text = it,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppInfoFormatCard(
+    kinds: List<String>,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    val current = kinds.firstOrNull() ?: "apk"
+    var expanded by rememberSaveable(kinds) { mutableStateOf(false) }
+
+    Surface(
+        modifier = modifier.clip(shape),
+        shape = shape,
+        color = Color(SourceCardFill),
+        border = BorderStroke(1.dp, Color(SourceCardBorder))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = "Format",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    Text(
+                        text = current.uppercase(Locale.US),
+                        fontWeight = FontWeight.Bold,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                if (kinds.size > 1) {
+                    // Same +N pill + chevron affordance as the Architecture card.
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .clickable { expanded = !expanded }
+                            .padding(horizontal = 2.dp, vertical = 2.dp)
+                    ) {
+                        if (!expanded) {
+                            Text(
+                                text = "+${kinds.size - 1}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(
+                                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                    )
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                        Icon(
+                            imageVector = if (expanded) {
+                                Icons.Outlined.ExpandLess
+                            } else {
+                                Icons.Outlined.ExpandMore
+                            },
+                            contentDescription = if (expanded) "Collapse formats" else "Choose format",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+            AnimatedExpand(visible = expanded) {
+                androidx.compose.material3.HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                )
+                kinds.forEach { kind ->
+                    val selected = kind == current
+                    Text(
+                        text = kind.uppercase(Locale.US),
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable {
+                                onSelect(kind)
+                                expanded = false
+                            }
+                            .padding(vertical = 6.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppInfoArchCard(abis: List<String>) {
+    val shape = RoundedCornerShape(HelperDefaults.CompactCornerRadius)
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    val displayAbis = abis.takeIf { it.isNotEmpty() } ?: listOf("Default")
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .clickable(enabled = displayAbis.size > 1) { expanded = !expanded },
+        shape = shape,
+        color = Color(SourceCardFill),
+        border = BorderStroke(1.dp, Color(SourceCardBorder))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Architecture",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                if (displayAbis.size > 1 && !expanded) {
+                    Text(
+                        text = "+${displayAbis.size - 1}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(
+                                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            )
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
+                    )
+                }
+                Icon(
+                    imageVector = if (expanded) {
+                        Icons.Outlined.ExpandLess
+                    } else {
+                        Icons.Outlined.ExpandMore
+                    },
+                    contentDescription = if (expanded) "Collapse" else "Expand",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            AnimatedExpand(visible = expanded) {
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    HelperChip(text = request.requestedVersionName?.let { "v$it" } ?: "any version")
-                    request.versionCodeSummary?.let { HelperChip(text = "build $it") }
-                    request.requestedFormatLabel.takeIf { it.isNotBlank() }?.let {
-                        HelperChip(text = it)
-                    }
-                    if (request.availableAbis.isNotEmpty()) {
-                        HelperChip(text = request.abiSummary)
+                    displayAbis.forEach { abi ->
+                        HelperChip(text = abi)
                     }
                 }
             }
+            if (!expanded) {
+                Text(
+                    text = displayAbis.first(),
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun AppAvatar(packageName: String, initial: Char) {
     val context = LocalContext.current
-    // Fetch the installed app's real icon; fall back to the letter tile when
-    // the app isn't installed (or its icon can't be read).
+    // Fetch the installed app's real icon; when the app isn't installed use the
+    // Android default app icon; the letter tile is the last-resort fallback.
     var iconBitmap by remember(packageName) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(packageName) {
         iconBitmap = withContext(Dispatchers.IO) {
-            runCatching {
+            val installed = runCatching {
                 context.packageManager.getApplicationIcon(packageName)
-                    .toBitmap(width = 176, height = 176)
-                    .asImageBitmap()
+            }.getOrNull()
+            val drawable = installed
+                ?: context.packageManager.getDefaultActivityIcon()
+            runCatching {
+                drawable.toBitmap(width = 176, height = 176).asImageBitmap()
             }.getOrNull()
         }
     }
@@ -2983,6 +3283,29 @@ private fun AppAvatar(packageName: String, initial: Char) {
                 fontWeight = FontWeight.Bold
             )
         }
+    }
+}
+
+/** Shared expand/collapse animation for every collapsible section. */
+@Composable
+private fun AnimatedExpand(
+    visible: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        modifier = modifier,
+        enter = expandVertically(
+            animationSpec = tween(220),
+            expandFrom = Alignment.Top
+        ) + fadeIn(animationSpec = tween(220)),
+        exit = shrinkVertically(
+            animationSpec = tween(180),
+            shrinkTowards = Alignment.Top
+        ) + fadeOut(animationSpec = tween(180))
+    ) {
+        content()
     }
 }
 
@@ -3133,7 +3456,7 @@ private fun SourcePickerFlow(
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
-            if (sourcesExpanded) {
+            AnimatedExpand(visible = sourcesExpanded) {
                 if (showHowItWorks) {
                     InfoCard(
                         "Pick a source, then a version type. The helper finds the version, " +
@@ -3893,7 +4216,7 @@ private fun AboutModeCard(tab: SourceSubTab) {
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            if (expanded) {
+            AnimatedExpand(visible = expanded) {
                 androidx.compose.material3.HorizontalDivider(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                 )
