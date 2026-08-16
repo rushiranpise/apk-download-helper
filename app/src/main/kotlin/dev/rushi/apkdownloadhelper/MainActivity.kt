@@ -2246,7 +2246,7 @@ private fun SourceHealthCard(entries: List<SourceHealthEntry>) {
 private fun SourceHealthRow(entry: SourceHealthEntry) {
     val (dotColor, statusText) = when (entry.status) {
         SourceHealthStatus.Ok -> MaterialTheme.colorScheme.primary to "Available"
-        SourceHealthStatus.Checking -> Color(0xFFFFD166) to "Checking..."
+        SourceHealthStatus.Checking -> warningAccent() to "Checking..."
         SourceHealthStatus.Failed -> MaterialTheme.colorScheme.error to (entry.message ?: "Failed")
         SourceHealthStatus.NoResult -> MaterialTheme.colorScheme.onSurfaceVariant to "No matching candidates"
         SourceHealthStatus.NotChecked -> MaterialTheme.colorScheme.outline to "Not checked"
@@ -4868,16 +4868,9 @@ private fun CandidateInfoChips(request: HelperRequest, candidate: DownloadCandid
 
 @Composable
 private fun CandidateMatchBox(match: CandidateMatchSummary) {
-    val containerColor = if (match.matches) {
-        Color(0xFF12382D)
-    } else {
-        Color(0xFF432023)
-    }
-    val contentColor = if (match.matches) {
-        Color(0xFF79DEAF)
-    } else {
-        Color(0xFFFFB3AC)
-    }
+    val tone = if (match.matches) ChipTone.Success else ChipTone.Error
+    val containerColor = toneContainer(tone)
+    val contentColor = toneContent(tone)
 
     HelperCard(
         cornerRadius = HelperDefaults.CompactCornerRadius,
@@ -4903,22 +4896,9 @@ private fun CandidateMatchBox(match: CandidateMatchSummary) {
 
 @Composable
 private fun HelperChip(text: String, tone: ChipTone = ChipTone.Neutral) {
-    val colors = MaterialTheme.colorScheme
-    val containerColor = when (tone) {
-        ChipTone.Neutral -> colors.surfaceVariant.copy(alpha = 0.42f)
-        ChipTone.Success -> Color(0xFF12382D)
-        ChipTone.Error -> Color(0xFF432023)
-    }
-    val contentColor = when (tone) {
-        ChipTone.Neutral -> colors.onSurfaceVariant
-        ChipTone.Success -> Color(0xFF79DEAF)
-        ChipTone.Error -> Color(0xFFFFB3AC)
-    }
-    val borderColor = when (tone) {
-        ChipTone.Neutral -> colors.outlineVariant.copy(alpha = 0.5f)
-        ChipTone.Success -> Color(0xFF79DEAF).copy(alpha = 0.34f)
-        ChipTone.Error -> Color(0xFFFFB3AC).copy(alpha = 0.34f)
-    }
+    val containerColor = toneContainer(tone)
+    val contentColor = toneContent(tone)
+    val borderColor = toneBorder(tone)
 
     Surface(
         shape = RoundedCornerShape(50),
@@ -4942,6 +4922,31 @@ private enum class ChipTone {
     Success,
     Error
 }
+
+@Composable
+private fun toneContainer(tone: ChipTone): Color = when (tone) {
+    ChipTone.Neutral -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.42f)
+    ChipTone.Success -> if (helperDarkTheme) Color(0xFF12382D) else Color(0xFFC8E6C9)
+    ChipTone.Error -> if (helperDarkTheme) Color(0xFF432023) else Color(0xFFFFCDD2)
+}
+
+@Composable
+private fun toneContent(tone: ChipTone): Color = when (tone) {
+    ChipTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
+    ChipTone.Success -> if (helperDarkTheme) Color(0xFF79DEAF) else Color(0xFF1B5E20)
+    ChipTone.Error -> if (helperDarkTheme) Color(0xFFFFB3AC) else Color(0xFFB71C1C)
+}
+
+@Composable
+private fun toneBorder(tone: ChipTone): Color = when (tone) {
+    ChipTone.Neutral -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+    ChipTone.Success -> toneContent(ChipTone.Success).copy(alpha = if (helperDarkTheme) 0.34f else 0.35f)
+    ChipTone.Error -> toneContent(ChipTone.Error).copy(alpha = if (helperDarkTheme) 0.34f else 0.35f)
+}
+
+@Composable
+private fun warningAccent(): Color =
+    if (helperDarkTheme) Color(0xFFFFD166) else Color(0xFF9A6700)
 
 @Composable
 private fun CheckingPickedFileState(state: UiState.CheckingPickedFile) {
@@ -5731,7 +5736,7 @@ internal enum class VersionStatus(val label: String) {
 @Composable
 private fun LogLevel.color(): Color = when (this) {
     LogLevel.Info -> MaterialTheme.colorScheme.onSurfaceVariant
-    LogLevel.Warning -> Color(0xFFFFD166)
+    LogLevel.Warning -> warningAccent()
     LogLevel.Error -> MaterialTheme.colorScheme.error
 }
 
