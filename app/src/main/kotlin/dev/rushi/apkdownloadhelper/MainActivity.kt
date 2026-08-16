@@ -31,7 +31,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -112,6 +112,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
@@ -2636,10 +2637,8 @@ private fun HelperBoltButton(
 
 @Composable
 private fun AppInfoCard(request: HelperRequest) {
-    // Collapsed by default so the Sources/Variants sections stay visible on
-    // screen; tap the header to expand the request and device details.
-    var expanded by rememberSaveable(request.packageName) { mutableStateOf(false) }
-
+    // The header already shows version/build/format/ABI as chips, so the
+    // details render inline without an expand toggle.
     HelperCard(cornerRadius = HelperDefaults.SectionCornerRadius) {
         Column(
             modifier = Modifier
@@ -2647,45 +2646,14 @@ private fun AppInfoCard(request: HelperRequest) {
                 .padding(HelperDefaults.ContentPadding),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            AppInfoHeader(request, expanded = expanded, onToggle = { expanded = !expanded })
-
-            if (expanded) {
-                androidx.compose.material3.HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
-                )
-
-                AppInfoSection("Request") {
-                    val versionLabel = listOfNotNull(
-                        request.requestedVersionName,
-                        request.versionCodeSummary?.let { "build $it" }
-                    ).joinToString(" · ").ifBlank { "Any compatible" }
-                    AppInfoRow(label = "Version", value = versionLabel)
-                    AppInfoRow(label = "Format", value = request.requestedFormatLabel)
-                }
-
-                val abis = request.availableAbis
-                if (abis.isNotEmpty()) {
-                    AppInfoSection("Device") {
-                        AppInfoChipRow(label = "ABI", items = abis)
-                    }
-                }
-
-                if (request.stockInstallRequired) {
-                    Text(
-                        text = "Root mount may require the stock app before Morphe patches it.",
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                }
-            }
+            AppInfoHeader(request)
         }
     }
 }
 
 @Composable
 private fun AppInfoHeader(
-    request: HelperRequest,
-    expanded: Boolean,
-    onToggle: () -> Unit
+    request: HelperRequest
 ) {
     val context = LocalContext.current
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
@@ -2694,8 +2662,6 @@ private fun AppInfoHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(HelperDefaults.SectionCornerRadius))
-            .clickable(onClick = onToggle)
             .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -2760,16 +2726,6 @@ private fun AppInfoHeader(
                     }
                 }
             }
-
-        Icon(
-            imageVector = if (expanded) {
-                Icons.Outlined.ExpandLess
-            } else {
-                Icons.Outlined.ExpandMore
-            },
-            contentDescription = if (expanded) "Collapse" else "Expand",
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
@@ -2801,16 +2757,6 @@ private fun AppAvatar(initial: Char) {
 }
 
 @Composable
-private fun AppInfoSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Column(
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        SectionTitle(title)
-        content()
-    }
-}
-
-@Composable
 private fun SectionTitle(title: String) {
     Text(
         text = title,
@@ -2818,51 +2764,6 @@ private fun SectionTitle(title: String) {
         style = MaterialTheme.typography.labelMedium,
         fontWeight = FontWeight.SemiBold
     )
-}
-
-@Composable
-private fun AppInfoRow(label: String, value: String) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            text = label,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(0.30f)
-        )
-        Text(
-            text = value,
-            fontWeight = FontWeight.Medium,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(0.70f)
-        )
-    }
-}
-
-@Composable
-private fun AppInfoChipRow(label: String, items: List<String>) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top
-    ) {
-        Text(
-            text = label,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(0.30f)
-        )
-        FlowRow(
-            modifier = Modifier.weight(0.70f),
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            items.forEach { abi ->
-                HelperChip(text = abi)
-            }
-        }
-    }
 }
 
 @Composable
@@ -3106,7 +3007,10 @@ private fun buildPrimaryAction(
 }
 
 private val sourceCategories: List<Pair<String, List<DownloadSource>>> = listOf(
-    "Official" to listOf(DownloadSource.PLAY),
+    "Official" to listOf(
+        DownloadSource.PLAY,
+        DownloadSource.AURORA
+    ),
     "Trusted mirrors" to listOf(
         DownloadSource.APK_MIRROR,
         DownloadSource.UPTODOWN,
@@ -3117,8 +3021,7 @@ private val sourceCategories: List<Pair<String, List<DownloadSource>>> = listOf(
         DownloadSource.APTOIDE,
         DownloadSource.EVOZI,
         DownloadSource.MI9,
-        DownloadSource.APK_DOWNLOADER,
-        DownloadSource.AURORA
+        DownloadSource.APK_DOWNLOADER
     )
 )
 
@@ -3172,17 +3075,9 @@ private fun SourceCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val brand = group.source.brand()
-    val latestName = (group.latest as? ResolveState.Done)
-        ?.candidates?.firstOrNull()?.versionName
-    val subtitle = when {
-        group.source == DownloadSource.PLAY -> brand.descriptor
-        latestName != null -> "Latest: $latestName"
-        else -> brand.descriptor
-    }
-    val confirmed = group.source == DownloadSource.PLAY ||
-        (group.latest as? ResolveState.Done)?.candidates?.isNotEmpty() == true ||
-        (group.recommended as? ResolveState.Done)?.candidates?.isNotEmpty() == true
+    val confirmed = group.source != DownloadSource.PLAY &&
+        ((group.latest as? ResolveState.Done)?.candidates?.isNotEmpty() == true ||
+            (group.recommended as? ResolveState.Done)?.candidates?.isNotEmpty() == true)
 
     val shape = RoundedCornerShape(16.dp)
     Surface(
@@ -3205,37 +3100,26 @@ private fun SourceCard(
             verticalAlignment = Alignment.CenterVertically
         ) {
             SourceAvatar(source = group.source)
-            Column(
+            Row(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(2.dp)
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = group.source.label,
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (confirmed) {
-                        Icon(
-                            imageVector = Icons.Outlined.CheckCircle,
-                            contentDescription = "Available",
-                            tint = Color(VerifiedGreen),
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
-                }
                 Text(
-                    text = subtitle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
+                    text = group.source.label,
+                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.bodyMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (confirmed) {
+                    Icon(
+                        imageVector = Icons.Outlined.CheckCircle,
+                        contentDescription = "Available",
+                        tint = Color(VerifiedGreen),
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
             }
             RadioDot(selected = selected)
         }
@@ -3243,75 +3127,32 @@ private fun SourceCard(
 }
 
 private data class SourceBrand(
-    val color: Color,
-    val glyph: String? = null,
-    val icon: ImageVector? = null,
-    val playTriangle: Boolean = false,
-    val descriptor: String
+    val resId: Int
 )
 
 private fun DownloadSource.brand(): SourceBrand = when (this) {
-    DownloadSource.PLAY -> SourceBrand(
-        color = Color(0xFF00C853),
-        playTriangle = true,
-        descriptor = "Official by Google"
-    )
-    DownloadSource.APK_MIRROR -> SourceBrand(Color(0xFFFF6D00), glyph = "AM", descriptor = "Trusted mirror")
-    DownloadSource.APK_PURE -> SourceBrand(Color(0xFF1E9E4E), glyph = "A", descriptor = "Trusted mirror")
-    DownloadSource.APK_COMBO -> SourceBrand(Color(0xFF2E7D32), icon = Icons.Outlined.BugReport, descriptor = "Trusted mirror")
-    DownloadSource.UPTODOWN -> SourceBrand(Color(0xFF1E88E5), icon = Icons.Outlined.FileDownload, descriptor = "Trusted mirror")
-    DownloadSource.AURORA -> SourceBrand(Color(0xFF7C4DFF), glyph = "A", descriptor = "Play Store client")
-    DownloadSource.APTOIDE -> SourceBrand(Color(0xFFFF5722), glyph = "A", descriptor = "Community store")
-    DownloadSource.EVOZI -> SourceBrand(Color(0xFF455A64), glyph = "E", descriptor = "Direct APK search")
-    DownloadSource.MI9 -> SourceBrand(Color(0xFF1565C0), glyph = "Mi9", descriptor = "Direct APK search")
-    DownloadSource.APK_DOWNLOADER -> SourceBrand(Color(0xFF00838F), glyph = "D", descriptor = "Direct APK search")
+    DownloadSource.PLAY -> SourceBrand(resId = R.drawable.ic_src_play)
+    DownloadSource.APK_MIRROR -> SourceBrand(resId = R.drawable.ic_src_apkmirror)
+    DownloadSource.APK_PURE -> SourceBrand(resId = R.drawable.ic_src_apkpure)
+    DownloadSource.APK_COMBO -> SourceBrand(resId = R.drawable.ic_src_apkcombo)
+    DownloadSource.UPTODOWN -> SourceBrand(resId = R.drawable.ic_src_uptodown)
+    DownloadSource.AURORA -> SourceBrand(resId = R.drawable.ic_src_aurora)
+    DownloadSource.APTOIDE -> SourceBrand(resId = R.drawable.ic_src_aptoide)
+    DownloadSource.EVOZI -> SourceBrand(resId = R.drawable.ic_src_evozi)
+    DownloadSource.MI9 -> SourceBrand(resId = R.drawable.ic_src_mi9)
+    DownloadSource.APK_DOWNLOADER -> SourceBrand(resId = R.drawable.ic_src_apkdownloader)
 }
 
 @Composable
 private fun SourceAvatar(source: DownloadSource, size: Dp = 40.dp) {
-    val brand = source.brand()
-    Box(
+    // Official brand logo: square artwork, shown as-is with rounded corners.
+    Image(
+        painter = painterResource(source.brand().resId),
+        contentDescription = null,
         modifier = Modifier
             .size(size)
             .clip(RoundedCornerShape(12.dp))
-            .background(brand.color),
-        contentAlignment = Alignment.Center
-    ) {
-        when {
-            brand.playTriangle -> PlayTriangleIcon(
-                tint = Color.White,
-                modifier = Modifier.size(size * 0.5f)
-            )
-            brand.icon != null -> Icon(
-                imageVector = brand.icon,
-                contentDescription = null,
-                tint = Color.White,
-                modifier = Modifier.size(size * 0.5f)
-            )
-            else -> Text(
-                text = brand.glyph.orEmpty(),
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = if (brand.glyph.orEmpty().length > 1) 11.sp else 16.sp,
-                maxLines = 1
-            )
-        }
-    }
-}
-
-@Composable
-private fun PlayTriangleIcon(tint: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
-        val w = size.width
-        val h = size.height
-        val path = Path().apply {
-            moveTo(w * 0.30f, h * 0.16f)
-            lineTo(w * 0.30f, h * 0.84f)
-            lineTo(w * 0.86f, h * 0.5f)
-            close()
-        }
-        drawPath(path = path, color = tint)
-    }
+    )
 }
 
 @Composable
@@ -3431,8 +3272,8 @@ private fun SourceBottomBar(
                         contentDescription = null,
                         modifier = Modifier.size(HelperDefaults.IconSizeSmall)
                     )
-                    Spacer(Modifier.width(HelperDefaults.ContentPaddingSmall))
                 }
+                Spacer(Modifier.width(HelperDefaults.ContentPaddingSmall))
                 Text(action.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
@@ -3467,13 +3308,12 @@ private fun SourceSquareButton(
 
 private enum class SourceSubTab(
     val label: String,
-    val subtitle: String,
     val icon: ImageVector
 ) {
-    Manual("Manual", "Choose version manually", Icons.Outlined.Tune),
-    Recommended("Recommended", "Requested version", Icons.Outlined.CheckCircle),
-    Latest("Latest", "Newest version", Icons.Outlined.Star),
-    History("History", "Browse previous versions", Icons.Outlined.History)
+    Manual("Manual", Icons.Outlined.Tune),
+    Recommended("Recommended", Icons.Outlined.CheckCircle),
+    Latest("Latest", Icons.Outlined.Star),
+    History("History", Icons.Outlined.History)
 }
 
 /** Sources that can resolve the exact requested version from their own data. */
@@ -3560,12 +3400,7 @@ private fun SourcePageContent(
                 CandidateResolveSection(
                     request = request,
                     state = group.recommended,
-                    actionText = "Find recommended",
-                    loadingText = "Checking recommended version...",
                     emptyText = "Requested version was not found on this source. Use Manual mode for this source instead.",
-                    onResolve = {
-                        onResolve(group.source, CandidateOption.REQUESTED)
-                    },
                     onDownload = onDownload,
                     onPickDownloadedFile = onPickDownloadedFile,
                     onUseInstalledApp = onUseInstalledApp,
@@ -3592,12 +3427,7 @@ private fun SourcePageContent(
                 CandidateResolveSection(
                     request = request,
                     state = group.latest,
-                    actionText = "Find latest",
-                    loadingText = "Checking latest version...",
                     emptyText = "Latest version was not found on this source. Use Manual mode for this source instead.",
-                    onResolve = {
-                        onResolve(group.source, CandidateOption.LATEST)
-                    },
                     onDownload = onDownload,
                     onPickDownloadedFile = onPickDownloadedFile,
                     onUseInstalledApp = onUseInstalledApp,
@@ -3613,7 +3443,6 @@ private fun SourcePageContent(
                 )
                 VersionHistorySection(
                     state = group.history,
-                    onResolve = { onVersionHistory(group.source) },
                     onDownloadVersion = onDownloadVersion,
                     onSolveCaptcha = onSolveCaptcha
                 )
@@ -3674,7 +3503,7 @@ private fun VersionTypeCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 12.dp),
+                .padding(horizontal = 4.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -3691,26 +3520,15 @@ private fun VersionTypeCard(
             Text(
                 text = tab.label,
                 fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
                 color = if (selected) {
                     MaterialTheme.colorScheme.onSurface
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 }
-            )
-            Text(
-                text = tab.subtitle,
-                color = if (selected) {
-                    MaterialTheme.colorScheme.primary
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                },
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                textAlign = TextAlign.Center
             )
         }
     }
@@ -3783,43 +3601,17 @@ private fun AboutModeCard(tab: SourceSubTab) {
 @Composable
 private fun VersionHistorySection(
     state: VersionHistoryState,
-    onResolve: () -> Unit,
     onDownloadVersion: (DownloadCandidate) -> Unit,
     onSolveCaptcha: (DownloadCandidate) -> Unit
 ) {
     when (state) {
-        VersionHistoryState.Idle -> {
-            HelperOutlinedButton(
-                text = "Load versions",
-                onClick = onResolve,
-                icon = Icons.Outlined.Search,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        VersionHistoryState.Loading -> {
-            HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(HelperDefaults.ContentPadding),
-                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                    Text("Loading versions...", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
+        // Idle and Loading are driven entirely by the bottom-bar primary
+        // action button; the content area shows results only.
+        VersionHistoryState.Idle,
+        VersionHistoryState.Loading -> Unit
 
         is VersionHistoryState.Error -> {
             InfoCard(state.message)
-            HelperOutlinedButton(
-                text = "Try again",
-                onClick = onResolve,
-                icon = Icons.Outlined.Refresh,
-                modifier = Modifier.fillMaxWidth()
-            )
         }
 
         is VersionHistoryState.Done -> {
@@ -3927,10 +3719,7 @@ private fun VersionHistoryRow(
 private fun CandidateResolveSection(
     request: HelperRequest,
     state: ResolveState,
-    actionText: String,
-    loadingText: String,
     emptyText: String,
-    onResolve: () -> Unit,
     onDownload: (DownloadCandidate) -> Unit,
     onPickDownloadedFile: (DownloadCandidate) -> Unit,
     onUseInstalledApp: (DownloadCandidate) -> Unit,
@@ -3938,29 +3727,10 @@ private fun CandidateResolveSection(
     installedPackageRefreshToken: Int
 ) {
     when (state) {
-        ResolveState.Idle -> {
-            HelperOutlinedButton(
-                text = actionText,
-                onClick = onResolve,
-                icon = Icons.Outlined.Search,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-
-        ResolveState.Loading -> {
-            HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(HelperDefaults.ContentPadding),
-                    horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                    Text(loadingText, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
+        // Idle and Loading are driven entirely by the bottom-bar primary
+        // action button; the content area shows results only.
+        ResolveState.Idle,
+        ResolveState.Loading -> Unit
 
         is ResolveState.Done -> {
             if (state.candidates.isEmpty()) {
@@ -3993,12 +3763,6 @@ private fun CandidateResolveSection(
                     installedPackageRefreshToken = installedPackageRefreshToken
                 )
             }
-            HelperOutlinedButton(
-                text = "Try again",
-                onClick = onResolve,
-                icon = Icons.Outlined.Refresh,
-                modifier = Modifier.fillMaxWidth()
-            )
         }
     }
 }
@@ -4150,16 +3914,18 @@ private fun CandidateCard(
         candidate.versionCode != null ||
         !candidate.fileKind.equals("web", ignoreCase = true)
     var hasOpenedLink by remember(candidate.identityKey()) { mutableStateOf(false) }
+    // Manual-mode links are opened by the bottom-bar primary action, so the
+    // "installed app" offer applies as soon as the row renders.
+    val linkConsideredOpened = hasOpenedLink || candidate.option == CandidateOption.MANUAL
     val showUseInstalledApp = candidate.source == DownloadSource.PLAY &&
-        hasOpenedLink &&
-        remember(candidate.packageName, hasOpenedLink, installedPackageRefreshToken) {
+        linkConsideredOpened &&
+        remember(candidate.packageName, linkConsideredOpened, installedPackageRefreshToken) {
             context.isPackageInstalled(candidate.packageName)
         }
 
-    // A plain web link whose only content is the Open link action (manual-mode
-    // rows, and info-less Play/Aurora listings) renders as a bare outlined
-    // button to match the idle action buttons instead of a filled card around
-    // a single button.
+    // A plain web link with no resolved metadata (manual-mode rows, and
+    // info-less Play/Aurora listings) renders as a bare action instead of a
+    // filled card around a single button.
     val bareLink = candidate.note == null &&
         !hasResolvedCandidateInfo &&
         !candidate.directDownload &&
@@ -4185,15 +3951,33 @@ private fun CandidateCard(
                 icon = Icons.Outlined.Download,
                 modifier = Modifier.fillMaxWidth()
             )
+        } else if (candidate.option == CandidateOption.MANUAL) {
+            // Manual-mode rows: the bottom-bar primary action opens the link
+            // ("Open source site"), so the card only offers the return flow.
+            if (candidate.source.supportsManualArtifactPicker) {
+                HelperButton(
+                    text = "Select downloaded file",
+                    onClick = onPickDownloadedFile,
+                    icon = Icons.Outlined.FolderOpen,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (showUseInstalledApp) {
+                HelperButton(
+                    text = "Use installed app",
+                    onClick = onUseInstalledApp,
+                    icon = Icons.Outlined.CheckCircle,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         } else {
             // Resolved candidates (Recommended/Latest/History) from every source
             // except Aurora and Play can fall back to the in-app captcha
             // browser: it opens the candidate's page in a real WebView (passing
             // any Cloudflare challenge) and captures the download URL the page
-            // produces. Manual-mode links stay plain open-link rows — their job
-            // is the external "select downloaded file" flow.
-            if (candidate.option != CandidateOption.MANUAL &&
-                candidate.source != DownloadSource.AURORA &&
+            // produces. The Open link action stays here because the bottom bar
+            // for these tabs shows "Find latest/requested" instead.
+            if (candidate.source != DownloadSource.AURORA &&
                 candidate.source != DownloadSource.PLAY
             ) {
                 HelperButton(
