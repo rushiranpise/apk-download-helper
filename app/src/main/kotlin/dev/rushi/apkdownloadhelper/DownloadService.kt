@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -83,7 +84,12 @@ internal object DownloadJobManager {
     )
 
     sealed interface Event {
-        data class Progress(val candidate: DownloadCandidate, val percent: Int) : Event
+        data class Progress(
+            val candidate: DownloadCandidate,
+            val percent: Int,
+            val speedBytesPerSec: Double = 0.0,
+            val etaMs: Long? = null
+        ) : Event
         data class Completed(val result: PendingDownloadResult, val epoch: Long = 0) : Event
         data class Failed(val candidate: DownloadCandidate, val message: String) : Event
         data class Cancelled(val candidate: DownloadCandidate) : Event
@@ -168,6 +174,11 @@ internal class DownloadService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var downloadJob: Job? = null
     private var lastPostedPercent = -1
+    private var lastPostedTime = 0L
+    private var lastProgressBytes = 0L
+    private var lastProgressTime = 0L
+    private var currentSpeedBytesPerSec = 0.0
+    private var speedSamples = 0
 
     private val browserUserAgent =
         "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) AppleWebKit/537.36 " +
@@ -251,6 +262,11 @@ internal class DownloadService : Service() {
     private fun startDownload(job: DownloadJobManager.DownloadJob) {
         val candidate = job.candidate
         lastPostedPercent = -1
+        lastPostedTime = 0L
+        lastProgressBytes = 0L
+        lastProgressTime = 0L
+        currentSpeedBytesPerSec = 0.0
+        speedSamples = 0
         val notification = buildProgressNotification(candidate, 0)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
@@ -446,11 +462,77 @@ internal class DownloadService : Service() {
 
     private fun updateDownloadProgress(candidate: DownloadCandidate, copied: Long, total: Long) {
         if (total <= 0L) return
+        val now = SystemClock.elapsedRealtime()
+        if (lastProgressTime == 0L) {
+            lastProgressTime = now
+            lastProgressBytes = copied
+        } else {
+            val dt = now - lastProgressTime
+            if (dt >= 500L) {
+                val delta = copied - lastProgressBytes
+                if (delta > 0L) {
+                    val instantaneous = delta * 1000.0 / dt
+                    // CDN reads are bursty (large chunks arrive in a few ms), so a
+                    // raw windowed speed jumps around. Exponential moving average
+                    // settles within a couple of seconds and stays stable.
+                    currentSpeedBytesPerSec = if (speedSamples == 0) {
+                        instantaneous
+                    } else {
+                        0.3 * instantaneous + 0.7 * currentSpeedBytesPerSec
+                    }
+                    speedSamples++
+                } else if (delta == 0L && speedSamples > 0) {
+                    // A stalled window (no bytes read) should drag the average
+                    // down so the ETA reflects reality instead of the last burst.
+                    currentSpeedBytesPerSec *= 0.5
+                }
+                lastProgressBytes = copied
+                lastProgressTime = now
+            }
+        }
         val percent = ((copied * 100f) / total).roundToInt().coerceIn(0, 100)
-        DownloadJobManager.emit(DownloadJobManager.Event.Progress(candidate, percent))
-        if (percent != lastPostedPercent) {
+        val etaMs = if (currentSpeedBytesPerSec > 0.0) {
+            ((total - copied) / currentSpeedBytesPerSec * 1000.0).toLong()
+        } else null
+        DownloadJobManager.emit(
+            DownloadJobManager.Event.Progress(candidate, percent, currentSpeedBytesPerSec, etaMs)
+        )
+        // Refresh at least once a second so speed/ETA stay fresh even when
+        // percent changes slowly (big files, slow links); percent-gating alone
+        // would leave a stale ETA up for many seconds.
+        if (percent != lastPostedPercent || now - lastPostedTime >= 1000L) {
             lastPostedPercent = percent
-            notifySafe(NOTIFICATION_ID_PROGRESS, buildProgressNotification(candidate, percent))
+            lastPostedTime = now
+            val speed = formatSpeed(currentSpeedBytesPerSec)
+            val text = buildString {
+                append(percent).append('%')
+                if (speed.isNotEmpty()) append(" · ").append(speed)
+                if (etaMs != null && etaMs > 0L) {
+                    append(" · ").append(formatEta(etaMs)).append(" left")
+                }
+            }
+            notifySafe(NOTIFICATION_ID_PROGRESS, buildProgressNotification(candidate, percent, text))
+        }
+    }
+
+    private fun formatSpeed(bytesPerSec: Double): String {
+        if (bytesPerSec <= 0.0) return ""
+        val mb = bytesPerSec / (1024.0 * 1024.0)
+        if (mb >= 1.0) return String.format(Locale.US, "%.1f MB/s", mb)
+        val kb = bytesPerSec / 1024.0
+        if (kb >= 1.0) return String.format(Locale.US, "%.0f KB/s", kb)
+        return String.format(Locale.US, "%.0f B/s", bytesPerSec)
+    }
+
+    private fun formatEta(ms: Long): String {
+        val totalSec = (ms / 1000L).coerceAtLeast(1L)
+        val h = totalSec / 3600L
+        val m = (totalSec % 3600L) / 60L
+        val s = totalSec % 60L
+        return if (h > 0L) {
+            String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+        } else {
+            String.format(Locale.US, "%d:%02d", m, s)
         }
     }
 

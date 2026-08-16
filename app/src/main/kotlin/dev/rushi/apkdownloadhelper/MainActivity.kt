@@ -1130,11 +1130,18 @@ class MainActivity : ComponentActivity() {
                         FastModeProgress(
                             sourceLabel = event.candidate.source.label,
                             detail = "Downloading from ${event.candidate.source.label}…",
-                            percent = event.percent
+                            percent = event.percent,
+                            speedBytesPerSec = event.speedBytesPerSec,
+                            etaMs = event.etaMs
                         )
                     )
                 } else {
-                    UiState.Downloading(event.candidate, event.percent)
+                    UiState.Downloading(
+                        event.candidate,
+                        event.percent,
+                        event.speedBytesPerSec,
+                        event.etaMs
+                    )
                 }
             }
             is DownloadJobManager.Event.Completed -> {
@@ -4923,7 +4930,14 @@ private fun FastModeCard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "${progress.percent}%",
+                        text = buildString {
+                            append(progress.percent).append('%')
+                            val speed = formatTransferSpeed(progress.speedBytesPerSec)
+                            if (speed.isNotEmpty()) append("  ·  ").append(speed)
+                            if (progress.etaMs != null && progress.etaMs > 0L) {
+                                append("  ·  ").append(formatTransferEta(progress.etaMs)).append(" left")
+                            }
+                        },
                         fontWeight = FontWeight.Medium
                     )
                     HelperOutlinedButton(
@@ -4961,7 +4975,17 @@ private fun DownloadingState(state: UiState.Downloading, onCancel: () -> Unit) {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("${state.percent}%", fontWeight = FontWeight.Medium)
+                Text(
+                    text = buildString {
+                        append(state.percent).append('%')
+                        val speed = formatTransferSpeed(state.speedBytesPerSec)
+                        if (speed.isNotEmpty()) append("  ·  ").append(speed)
+                        if (state.etaMs != null && state.etaMs > 0L) {
+                            append("  ·  ").append(formatTransferEta(state.etaMs)).append(" left")
+                        }
+                    },
+                    fontWeight = FontWeight.Medium
+                )
                 HelperOutlinedButton(
                     text = "Cancel",
                     onClick = onCancel,
@@ -4969,6 +4993,27 @@ private fun DownloadingState(state: UiState.Downloading, onCancel: () -> Unit) {
                 )
             }
         }
+    }
+}
+
+private fun formatTransferSpeed(bytesPerSec: Double): String {
+    if (bytesPerSec <= 0.0) return ""
+    val mb = bytesPerSec / (1024.0 * 1024.0)
+    if (mb >= 1.0) return String.format(Locale.US, "%.1f MB/s", mb)
+    val kb = bytesPerSec / 1024.0
+    if (kb >= 1.0) return String.format(Locale.US, "%.0f KB/s", kb)
+    return String.format(Locale.US, "%.0f B/s", bytesPerSec)
+}
+
+private fun formatTransferEta(ms: Long): String {
+    val totalSec = (ms / 1000L).coerceAtLeast(1L)
+    val h = totalSec / 3600L
+    val m = (totalSec % 3600L) / 60L
+    val s = totalSec % 60L
+    return if (h > 0L) {
+        String.format(Locale.US, "%d:%02d:%02d", h, m, s)
+    } else {
+        String.format(Locale.US, "%d:%02d", m, s)
     }
 }
 
@@ -5555,7 +5600,12 @@ private sealed interface UiState {
     data object Loading : UiState
     data class Ready(val result: CandidateResult) : UiState
     data class CheckingPickedFile(val candidate: DownloadCandidate) : UiState
-    data class Downloading(val candidate: DownloadCandidate, val percent: Int) : UiState
+    data class Downloading(
+        val candidate: DownloadCandidate,
+        val percent: Int,
+        val speedBytesPerSec: Double = 0.0,
+        val etaMs: Long? = null
+    ) : UiState
     data class Error(val message: String) : UiState
     data class FastMode(val progress: FastModeProgress) : UiState
 }
@@ -5582,6 +5632,8 @@ private data class FastModeProgress(
     val sourceLabel: String? = null,
     val detail: String = "Starting…",
     val percent: Int? = null,
+    val speedBytesPerSec: Double = 0.0,
+    val etaMs: Long? = null,
     val done: Boolean = false,
     val succeeded: Boolean = false,
     // Present once Fast Mode finishes so the regular source list stays reachable.
