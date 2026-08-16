@@ -1091,11 +1091,15 @@ class MainActivity : ComponentActivity() {
             is DownloadJobManager.Event.Completed -> {
                 // StateFlow replays its last value to every new collector, so a
                 // freshly created activity can receive the Completed event of a
-                // previous request session (after the old activity finished
-                // handing the file to Morphe). Only act when the result belongs
-                // to the current request; otherwise discard it so the old file
-                // is never handed to a different request.
-                if (event.result.belongsTo(request)) {
+                // previous request session. Only act when the event comes from
+                // the session currently in flight (same package, same epoch);
+                // otherwise discard it so the old file is never handed to a
+                // different request. The version is intentionally NOT checked
+                // here — the user may have deliberately downloaded a different
+                // version (e.g. the Latest tab) in this session, and that file
+                // must still be returned instead of leaving the UI stuck at
+                // 100%.
+                if (event.result.belongsToCurrentSession(request, event.epoch)) {
                     appendLog("Download validated: ${event.result.fileName}.")
                     if (!deliverResult(event.result)) {
                         appendLog(
@@ -1121,6 +1125,24 @@ class MainActivity : ComponentActivity() {
                                 )
                             )
                         } else if (activeRequest != null) {
+                            UiState.Ready(initialCandidateResult(activeRequest))
+                        } else {
+                            UiState.Idle
+                        }
+                    }
+                } else {
+                    appendLog(
+                        "Ignoring download completion for a different request session " +
+                            "(epoch ${event.epoch}, current ${DownloadJobManager.currentEpoch}).",
+                        LogLevel.Warning
+                    )
+                    // The stuck-at-100% symptom is gone once a terminal event
+                    // always lands somewhere — but if the UI is still showing a
+                    // stale in-flight download, reset it so the user is never
+                    // left frozen on a progress bar.
+                    if (uiState is UiState.Downloading) {
+                        val activeRequest = request
+                        uiState = if (activeRequest != null) {
                             UiState.Ready(initialCandidateResult(activeRequest))
                         } else {
                             UiState.Idle
@@ -5371,6 +5393,23 @@ internal fun PendingDownloadResult.belongsTo(request: HelperRequest?): Boolean {
     val candidateName = versionName ?: return true
     return candidateName.versionNameEquals(requestedName)
 }
+
+/**
+ * A live completion event belongs to the current session when the package
+ * matches the request on screen and the event was produced by the session
+ * currently in flight (see [DownloadJobManager.currentEpoch]). Unlike
+ * [belongsTo], the version is deliberately not compared: within the same
+ * session the user may have chosen a different version (Latest/History tab)
+ * and that file must still be returned to the caller instead of being
+ * silently discarded, which previously left the app frozen at 100%.
+ */
+internal fun PendingDownloadResult.belongsToCurrentSession(
+    request: HelperRequest?,
+    epoch: Long
+): Boolean =
+    request != null &&
+        requestPackage == request.packageName &&
+        epoch == DownloadJobManager.currentEpoch
 
 internal fun String.withoutTrailingVersionCode(): String =
     replace(Regex("""\s*\(\s*\d+\s*\)\s*$"""), "")

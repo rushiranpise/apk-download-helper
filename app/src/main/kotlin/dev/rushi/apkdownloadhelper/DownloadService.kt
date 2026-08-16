@@ -78,12 +78,13 @@ internal object DownloadJobManager {
         val request: HelperRequest,
         val candidate: DownloadCandidate,
         val settings: HelperSettings,
-        val requestIntentExtras: Bundle? = null
+        val requestIntentExtras: Bundle? = null,
+        val epoch: Long = 0
     )
 
     sealed interface Event {
         data class Progress(val candidate: DownloadCandidate, val percent: Int) : Event
-        data class Completed(val result: PendingDownloadResult) : Event
+        data class Completed(val result: PendingDownloadResult, val epoch: Long = 0) : Event
         data class Failed(val candidate: DownloadCandidate, val message: String) : Event
         data class Cancelled(val candidate: DownloadCandidate) : Event
         // The downloaded file is valid except for its version code (which the
@@ -100,11 +101,23 @@ internal object DownloadJobManager {
     var activeJob: DownloadJob? = null
         private set
 
+    /**
+     * Monotonic session counter, bumped on every [start]. A completion event
+     * only belongs to the request session that started it, so a replayed event
+     * from an earlier session (e.g. after activity recreation) can never hand
+     * an old file to a new request — even when package and version coincide
+     * with the new request's pin.
+     */
+    @Volatile
+    var currentEpoch: Long = 0
+        private set
+
     private val _events = MutableStateFlow<Event?>(null)
     val events: StateFlow<Event?> = _events.asStateFlow()
 
     fun start(job: DownloadJob) {
-        activeJob = job
+        currentEpoch++
+        activeJob = job.copy(epoch = currentEpoch)
         _events.value = null
     }
 
@@ -214,6 +227,16 @@ internal class DownloadService : Service() {
                     stopSelf()
                     return START_NOT_STICKY
                 }
+                // A duplicate START_DOWNLOAD (a double tap, or a stale activity
+                // instance starting the same job again) must not cancel and
+                // restart the download in flight. Two jobs racing over the same
+                // files corrupts the output and lets a zombie job's Cancelled
+                // event overwrite the real completion — leaving the app stuck
+                // at 100% with the file never returned.
+                if (downloadJob?.isActive == true) {
+                    Log.i(TAG, "Download already in progress; ignoring duplicate start.")
+                    return START_NOT_STICKY
+                }
                 startDownload(job)
                 return START_NOT_STICKY
             }
@@ -240,6 +263,10 @@ internal class DownloadService : Service() {
             startForeground(NOTIFICATION_ID_PROGRESS, notification)
         }
         downloadJob?.cancel()
+        // Also abort any in-flight blocking body read from the old job; a
+        // coroutine cancellation alone cannot interrupt a blocking OkHttp read,
+        // which would otherwise keep writing to the same staged file.
+        downloader.cancelCurrent()
         downloadJob = serviceScope.launch {
             try {
                 val file = runDownload(job)
@@ -317,7 +344,7 @@ internal class DownloadService : Service() {
             scheduleTemporaryDelete(file)
         }
 
-        DownloadJobManager.emit(DownloadJobManager.Event.Completed(result))
+        DownloadJobManager.emit(DownloadJobManager.Event.Completed(result, job.epoch))
         notifyCompletion(job, result)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

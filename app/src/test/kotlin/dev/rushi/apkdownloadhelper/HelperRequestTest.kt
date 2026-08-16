@@ -133,4 +133,51 @@ class HelperRequestTest {
     fun belongsTo_rejectsNullRequest() {
         assertFalse(pendingResult().belongsTo(null))
     }
+
+    // ---- live-event scoping (PendingDownloadResult.belongsToCurrentSession) ----
+
+    @Test
+    fun belongsToCurrentSession_matchesSamePackageAndEpoch() {
+        val request = testRequest(packageName = "com.example.app", versionName = "1.2.3")
+        assertTrue(
+            pendingResult(requestPackage = "com.example.app", versionName = "1.2.3")
+                .belongsToCurrentSession(request, epoch = DownloadJobManager.currentEpoch)
+        )
+    }
+
+    @Test
+    fun belongsToCurrentSession_acceptsDifferentVersionSameSession() {
+        // The user may deliberately download a different version (Latest tab)
+        // in the same session; it must still be returned, not dropped.
+        val request = testRequest(packageName = "com.example.app", versionName = "1.2.3")
+        assertTrue(
+            pendingResult(requestPackage = "com.example.app", versionName = "9.9.9")
+                .belongsToCurrentSession(request, epoch = DownloadJobManager.currentEpoch)
+        )
+    }
+
+    @Test
+    fun belongsToCurrentSession_rejectsDifferentPackage() {
+        val request = testRequest(packageName = "com.new.app", versionName = "1.2.3")
+        assertFalse(
+            pendingResult(requestPackage = "com.example.app")
+                .belongsToCurrentSession(request, epoch = DownloadJobManager.currentEpoch)
+        )
+    }
+
+    @Test
+    fun belongsToCurrentSession_rejectsStaleEpoch() {
+        val request = testRequest(packageName = "com.example.app", versionName = "1.2.3")
+        assertFalse(
+            pendingResult(requestPackage = "com.example.app")
+                .belongsToCurrentSession(request, epoch = DownloadJobManager.currentEpoch - 1)
+        )
+    }
+
+    @Test
+    fun belongsToCurrentSession_rejectsNullRequest() {
+        assertFalse(
+            pendingResult().belongsToCurrentSession(null, epoch = DownloadJobManager.currentEpoch)
+        )
+    }
 }
