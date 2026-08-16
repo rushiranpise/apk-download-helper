@@ -1,5 +1,6 @@
 package dev.rushi.apkdownloadhelper
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -179,5 +180,48 @@ class HelperRequestTest {
         assertFalse(
             pendingResult().belongsToCurrentSession(null, epoch = DownloadJobManager.currentEpoch)
         )
+    }
+
+    // ---- fileKindFromUrl ----
+
+    @Test
+    fun fileKindFromUrl_apkmirrorCdnApkIsNotMistakenForBundle() {
+        // The CDN file name embeds the host domain; "apkm" must not match "apkmirror".
+        val url = "https://eb5e7388c3df147b74dd2379b7cf8323.r2.cloudflarestorage.com/downloadprod/" +
+            "wp-content/uploads/2026/06/10/6a1d61d704300/com.accuweather.android.tablet_1.2.7-32_" +
+            "minAPI11%28nodpi%29_apkmirror.com.apk?X-Amz-Expires=3600"
+        assertEquals("apk", fileKindFromUrl(url))
+    }
+
+    @Test
+    fun fileKindFromUrl_downloadPhpIsNotMistakenForBundle() {
+        // APKMirror's download.php path itself contains "apkmirror".
+        val url = "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=14072439&key=2b218113dda68435162f39e99e820c5525641192"
+        assertEquals("apk", fileKindFromUrl(url))
+    }
+
+    @Test
+    fun fileKindFromUrl_realBundleUrl() {
+        assertEquals("apkm", fileKindFromUrl("https://cdn.example.com/apps/com.example.app-2.0_apkmirror.com.apkm"))
+        assertEquals("apkm", fileKindFromUrl("https://cdn.example.com/download/12345.bundle-apkm.bin"))
+    }
+
+    @Test
+    fun fileKindFromUrl_splitAndXapk() {
+        assertEquals("apks", fileKindFromUrl("https://cdn.example.com/apps/com.example.app_apkmirror.com.apks"))
+        assertEquals("xapk", fileKindFromUrl("https://cdn.example.com/apps/com.example.app.xapk"))
+    }
+
+    @Test
+    fun fileKindFromUrl_filenameQueryParam() {
+        assertEquals(
+            "xapk",
+            fileKindFromUrl("https://example.com/download.php?id=14072439&filename=app.xapk&key=abc")
+        )
+    }
+
+    @Test
+    fun fileKindFromUrl_noExtensionDefaultsToApk() {
+        assertEquals("apk", fileKindFromUrl("https://example.com/download?id=1"))
     }
 }

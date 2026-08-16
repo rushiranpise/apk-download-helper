@@ -6148,15 +6148,23 @@ internal fun parseInfoTableValue(doc: Document, label: String): String? =
 
 internal fun fileKindFromUrl(url: String): String {
     val decoded = URLDecoder.decode(url, StandardCharsets.UTF_8.name()).lowercase(Locale.US)
+    // Kind detection must be scoped to the file name (final path segment): CDN
+    // hosts and APKMirror's own download.php path embed "apkmirror", so a bare
+    // substring check for "apkm" wrongly matches and labels plain APKs as APKM
+    // bundles, which then fail validation as containers.
+    val path = runCatching { java.net.URI(decoded).path }.getOrDefault("")
+    val fileName = path.substringAfterLast('/')
+    val extension = fileName.substringAfterLast('.', "")
     val fileNameKind = Regex("""filename[^.]*\.(apk|apks|apkm|xapk)""")
         .find(decoded)
         ?.groupValues
         ?.getOrNull(1)
     return when {
+        extension in setOf("apk", "apks", "apkm", "xapk") -> extension
         fileNameKind != null -> fileNameKind
-        "xapk" in decoded -> "xapk"
-        "apks" in decoded -> "apks"
-        "apkm" in decoded -> "apkm"
+        "xapk" in fileName -> "xapk"
+        "apks" in fileName -> "apks"
+        "apkm" in fileName -> "apkm"
         else -> "apk"
     }
 }
