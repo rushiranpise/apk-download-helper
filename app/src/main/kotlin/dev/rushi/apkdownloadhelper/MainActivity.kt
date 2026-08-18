@@ -19,6 +19,7 @@ import android.os.Looper
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -142,7 +143,6 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -291,8 +291,8 @@ class MainActivity : ComponentActivity() {
     private var installedPackageRefreshToken by mutableIntStateOf(0)
     private val historyTimeFormat = SimpleDateFormat("MMM d, HH:mm", Locale.US)
     private var pendingDownload: PendingDownload? = null
-    // Non-null while the in-app captcha browser is open for a candidate whose
-    // source gates the file behind a challenge a plain HTTP client cannot pass.
+    // Non-null while the in-app browser is open for a candidate whose source
+    // needs a real browser to reach the APK download.
     private var captchaBrowser by mutableStateOf<DownloadCandidate?>(null)
     private var fastModeActive = false
     private var fastModeQueue: MutableList<DownloadSource>? = null
@@ -324,7 +324,7 @@ class MainActivity : ComponentActivity() {
                     CaptchaBrowserScreen(
                         candidate = captcha,
                         onClose = ::closeCaptchaBrowser,
-                        onUrlCaptured = ::onCaptchaUrlCaptured
+                        onDownloadCaptured = ::onBrowserDownloadCaptured
                     )
                 } else {
                     HelperScreen(
@@ -919,21 +919,35 @@ class MainActivity : ComponentActivity() {
         captchaBrowser = null
     }
 
-    private fun onCaptchaUrlCaptured(url: String) {
+    private fun onBrowserDownloadCaptured(capture: BrowserDownloadCapture) {
         val candidate = captchaBrowser ?: return
         captchaBrowser = null
-        val fileKind = fileKindFromUrl(url)
+        val fileKind = fileKindFromUrl(capture.downloadUrl)
+        val referer = capture.refererUrl
+            ?.takeIf(String::isNotBlank)
+            ?: candidate.captchaUrl
+            ?: candidate.url
+        val cookieHeader = capture.cookieHeader
+            ?: CookieManager.getInstance().getCookie(referer)
         appendLog(
             "Captured download link from ${candidate.source.label} in the in-app browser " +
-                "($fileKind): $url",
+                "($fileKind): ${capture.downloadUrl}",
             LogLevel.Info
         )
         downloadAndReturn(
             candidate.copy(
-                url = url,
+                url = capture.downloadUrl,
                 fileKind = fileKind,
                 directDownload = true,
-                note = null
+                note = null,
+                files = listOf(
+                    CandidateDownloadFile(
+                        url = capture.downloadUrl,
+                        fileName = capturedDownloadFileName(candidate, capture.downloadUrl, fileKind),
+                        referer = referer,
+                        cookieHeader = cookieHeader
+                    )
+                )
             )
         )
     }
@@ -1792,14 +1806,22 @@ private fun HelperOutlinedButton(
 private fun CaptchaBrowserScreen(
     candidate: DownloadCandidate,
     onClose: () -> Unit,
-    onUrlCaptured: (String) -> Unit
+    onDownloadCaptured: (BrowserDownloadCapture) -> Unit
 ) {
     val context = LocalContext.current
     var progress by remember { mutableIntStateOf(0) }
     val bridge = remember {
         CaptchaCaptureBridge { url ->
             Handler(Looper.getMainLooper()).post {
-                onUrlCaptured(url)
+                onDownloadCaptured(
+                    BrowserDownloadCapture(
+                        downloadUrl = url,
+                        refererUrl = candidate.captchaUrl ?: candidate.url,
+                        cookieHeader = CookieManager.getInstance().getCookie(
+                            candidate.captchaUrl ?: candidate.url
+                        )
+                    )
+                )
             }
         }
     }
@@ -1816,7 +1838,14 @@ private fun CaptchaBrowserScreen(
                 ): Boolean {
                     val url = request?.url?.toString() ?: return false
                     if (url.looksLikeApkDownload()) {
-                        onUrlCaptured(url)
+                        val referer = view?.url ?: view?.originalUrl ?: candidate.captchaUrl ?: candidate.url
+                        onDownloadCaptured(
+                            BrowserDownloadCapture(
+                                downloadUrl = url,
+                                refererUrl = referer,
+                                cookieHeader = CookieManager.getInstance().getCookie(referer)
+                            )
+                        )
                         return true
                     }
                     return false
@@ -1829,7 +1858,14 @@ private fun CaptchaBrowserScreen(
             }
             setDownloadListener { url, _, _, _, _ ->
                 // Authoritative signal: the page started a real download.
-                onUrlCaptured(url)
+                val referer = candidate.captchaUrl ?: candidate.url
+                onDownloadCaptured(
+                    BrowserDownloadCapture(
+                        downloadUrl = url,
+                        refererUrl = referer,
+                        cookieHeader = CookieManager.getInstance().getCookie(referer)
+                    )
+                )
             }
         }
     }
@@ -1868,8 +1904,13 @@ private fun CaptchaBrowserScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
+                    val browserTitle = if (candidate.captchaUrl != null && !candidate.directDownload) {
+                        "Solve captcha"
+                    } else {
+                        "Open in app"
+                    }
                     Text(
-                        text = "Solve captcha  ${candidate.source.label}",
+                        text = "$browserTitle  ${candidate.source.label}",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
@@ -1891,8 +1932,13 @@ private fun CaptchaBrowserScreen(
                 )
             }
             InfoCard(
-                "Solve the captcha in the browser. When the page starts the download, " +
-                    "the file is captured and returned to Morphe automatically."
+                if (candidate.captchaUrl != null && !candidate.directDownload) {
+                    "Solve the captcha in the browser. When the page starts the download, " +
+                        "the file is captured and returned to Morphe automatically." 
+                } else {
+                    "Find the download link in the web page. The app will handle the download." +
+                        "\npackage: \"${candidate.packageName}\"\nversion: \"${candidate.versionDisplay}\"."
+                }
             )
             if (progress > 0 && progress < 100) {
                 LinearProgressIndicator(
@@ -3559,13 +3605,12 @@ private fun SourcePickerFlow(
     val currentSubTab = subTabBySource[currentGroup.source]
         ?: defaultSubTab(currentGroup, request)
 
-    val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
     val openCandidateLink: (DownloadCandidate) -> Unit = { candidate ->
         if (candidate.source == DownloadSource.PLAY) {
             context.openPlayStoreListing(candidate.packageName, candidate.url)
         } else {
-            uriHandler.openUri(candidate.url)
+            onSolveCaptcha(candidate)
         }
     }
 
@@ -4470,7 +4515,6 @@ private fun VersionHistoryRow(
     onDownloadVersion: () -> Unit,
     onSolveCaptcha: (DownloadCandidate) -> Unit
 ) {
-    val uriHandler = LocalUriHandler.current
     val context = LocalContext.current
     HelperCard(cornerRadius = HelperDefaults.CompactCornerRadius) {
         Row(
@@ -4522,12 +4566,12 @@ private fun VersionHistoryRow(
                 }
                 showOpenLink -> {
                     HelperOutlinedButton(
-                        text = "Open link",
+                        text = "Open in app",
                         onClick = {
                             if (candidate.source == DownloadSource.PLAY) {
                                 context.openPlayStoreListing(candidate.packageName, candidate.url)
                             } else {
-                                uriHandler.openUri(candidate.url)
+                                onSolveCaptcha(candidate)
                             }
                         },
                         icon = Icons.Outlined.OpenInBrowser,
@@ -4739,7 +4783,6 @@ private fun CandidateCard(
     installedPackageRefreshToken: Int
 ) {
     val context = LocalContext.current
-    val uriHandler = LocalUriHandler.current
     val match = candidate.matchSummary(request)
     val hasResolvedCandidateInfo = candidate.versionName != null ||
         candidate.versionCode != null ||
@@ -4783,16 +4826,12 @@ private fun CandidateCard(
                 modifier = Modifier.fillMaxWidth()
             )
         } else if (candidate.option == CandidateOption.MANUAL) {
-            // Manual-mode rows: the bottom-bar primary action opens the link
-            // ("Open source site"), so the card only offers the return flow.
-            if (candidate.source.supportsManualArtifactPicker) {
-                HelperButton(
-                    text = "Select downloaded file",
-                    onClick = onPickDownloadedFile,
-                    icon = Icons.Outlined.FolderOpen,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+            HelperButton(
+                text = "Open in app",
+                onClick = { onSolveCaptcha(candidate) },
+                icon = Icons.Outlined.OpenInBrowser,
+                modifier = Modifier.fillMaxWidth()
+            )
             if (showUseInstalledApp) {
                 HelperButton(
                     text = "Use installed app",
@@ -4806,7 +4845,7 @@ private fun CandidateCard(
             // except Aurora and Play can fall back to the in-app captcha
             // browser: it opens the candidate's page in a real WebView (passing
             // any Cloudflare challenge) and captures the download URL the page
-            // produces. The Open link action stays here because the bottom bar
+            // produces. The browser action stays here because the bottom bar
             // for these tabs shows "Find latest/requested" instead.
             if (candidate.source != DownloadSource.AURORA &&
                 candidate.source != DownloadSource.PLAY
@@ -4819,26 +4858,18 @@ private fun CandidateCard(
                 )
             }
             HelperOutlinedButton(
-                text = "Open link",
+                text = "Open in app",
                 onClick = {
                     if (candidate.source == DownloadSource.PLAY) {
                         context.openPlayStoreListing(candidate.packageName, candidate.url)
                     } else {
-                        uriHandler.openUri(candidate.url)
+                        onSolveCaptcha(candidate)
                     }
                     hasOpenedLink = true
                 },
                 icon = Icons.Outlined.OpenInBrowser,
                 modifier = Modifier.fillMaxWidth()
             )
-            if (candidate.source.supportsManualArtifactPicker && hasOpenedLink) {
-                HelperButton(
-                    text = "Select downloaded file",
-                    onClick = onPickDownloadedFile,
-                    icon = Icons.Outlined.FolderOpen,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
             if (showUseInstalledApp) {
                 HelperButton(
                     text = "Use installed app",
@@ -5724,8 +5755,29 @@ internal data class CandidateDownloadFile(
     val url: String,
     val fileName: String,
     val size: Long? = null,
-    val referer: String? = null
+    val referer: String? = null,
+    val cookieHeader: String? = null
 )
+
+private data class BrowserDownloadCapture(
+    val downloadUrl: String,
+    val refererUrl: String? = null,
+    val cookieHeader: String? = null
+)
+
+private fun capturedDownloadFileName(
+    candidate: DownloadCandidate,
+    downloadUrl: String,
+    fileKind: String
+): String {
+    val decodedUrl = runCatching { Uri.decode(downloadUrl) }.getOrDefault(downloadUrl)
+    val path = runCatching { java.net.URI(decodedUrl).path }.getOrDefault("")
+    val fileName = path.substringAfterLast('/').takeIf { it.isNotBlank() && it != "/" }
+    val extension = fileName?.substringAfterLast('.', "")?.takeIf { it.isNotBlank() } ?: fileKind
+    val baseName = fileName?.takeIf { it.contains('.') }
+        ?: "${candidate.packageName}-${candidate.versionName ?: "download"}.$extension"
+    return baseName.sanitizeFileName()
+}
 
 internal data class DownloadedApkMetadata(
     val packageName: String,
