@@ -98,6 +98,7 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -108,6 +109,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -298,6 +300,9 @@ class MainActivity : ComponentActivity() {
     // Non-null while the in-app browser is open for a candidate whose source
     // needs a real browser to reach the APK download.
     private var captchaBrowser by mutableStateOf<DownloadCandidate?>(null)
+    // Set when a repeat request matches previous downloads that still exist;
+    // the user picks one to reuse or chooses to download a fresh copy.
+    private var reuseOffer by mutableStateOf<List<DownloadHistoryEntry>?>(null)
     private var fastModeActive = false
     private var fastModeQueue: MutableList<DownloadSource>? = null
     private var fastModeDecision: CompletableDeferred<FastModeChoice?>? = null
@@ -326,6 +331,7 @@ class MainActivity : ComponentActivity() {
             DownloadJobManager.events.collect(::handleDownloadEvent)
         }
         if (deliverPendingResultIfPresent(request)) return
+        if (request != null) offerExistingDownloadIfPresent(request!!)
 
         setContent {
             HelperTheme(
@@ -370,6 +376,14 @@ class MainActivity : ComponentActivity() {
                         onOpenMorphe = ::openMorpheManager,
                         onSolveCaptcha = ::openCaptchaBrowser,
                         onRequestFileTypeChange = ::changeRequestedFileType
+                    )
+                }
+                val offer = reuseOffer
+                if (offer != null) {
+                    ReuseOfferDialog(
+                        entries = offer,
+                        onUseExisting = ::useReuseOffer,
+                        onDownloadNew = { reuseOffer = null }
                     )
                 }
             }
@@ -1388,6 +1402,63 @@ class MainActivity : ComponentActivity() {
         runCatching {
             NotificationManagerCompat.from(this).cancel(NOTIFICATION_ID_DONE)
         }
+    }
+
+    /**
+     * When Morphe re-requests a package and version that were already
+     * downloaded (e.g. a patch failed and the user retries, or the same
+     * version needs patching again) and the file still exists because
+     * auto-clear is off or a visible copy was saved to Downloads, offer the
+     * user the choice: reuse the existing APK or download a fresh copy.
+     * Only matches an exact package + version, so a different app or version
+     * never gets an offer.
+     */
+    private fun offerExistingDownloadIfPresent(request: HelperRequest) {
+        if (request.callerPackage.isEmpty() || request.requestedVersionName == null) return
+        val existing = DownloadHistoryStore.entries(applicationContext)
+            .filter { history ->
+                history.packageName == request.packageName &&
+                    request.matchesRequestedVersion(history.versionName, null)
+            }
+            .distinctBy { it.uri }
+            .filter { entry -> historyFileExists(entry) }
+        if (existing.isNotEmpty()) reuseOffer = existing
+    }
+
+    private fun historyFileExists(entry: DownloadHistoryEntry): Boolean {
+        val uri = Uri.parse(entry.uri)
+        return runCatching {
+            if (entry.uri.startsWith("content://")) {
+                contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false
+            } else {
+                File(uri.path ?: return@runCatching false).exists()
+            }
+        }.getOrDefault(false)
+    }
+
+    /** Hand the selected offered file back to Morphe instead of downloading again. */
+    private fun useReuseOffer(entry: DownloadHistoryEntry) {
+        reuseOffer = null
+        val request = request ?: return
+        appendLog(
+            "Reusing previously downloaded ${entry.fileName} for ${request.packageName} " +
+                "instead of re-downloading.",
+            LogLevel.Info
+        )
+        if (logcatLoggingEnabled) {
+            Log.i(TAG, "Reusing cached download for ${request.packageName}: ${entry.fileName}")
+        }
+        val pending = PendingDownloadResult(
+            uri = entry.uri,
+            fileName = entry.fileName,
+            packageName = entry.packageName,
+            versionName = entry.versionName,
+            sourceName = entry.sourceName,
+            requestPackage = request.packageName,
+            callerPackage = request.callerPackage
+        )
+        DownloadJobManager.persistPendingResult(pending, applicationContext)
+        deliverResult(pending)
     }
 
     private fun deliverResult(pending: PendingDownloadResult): Boolean {
@@ -3072,6 +3143,81 @@ private fun HelperBoltButton(
             modifier = Modifier.size(HelperDefaults.IconSizeSmall)
         )
     }
+}
+
+@Composable
+private fun ReuseOfferDialog(
+    entries: List<DownloadHistoryEntry>,
+    onUseExisting: (DownloadHistoryEntry) -> Unit,
+    onDownloadNew: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDownloadNew,
+        title = {
+            Text(
+                text = "Use an existing APK?",
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(HelperDefaults.ContentPaddingSmall)
+            ) {
+                Text(
+                    text = "A previous download for this exact version is still available. Pick one to return to Morphe without downloading again.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                entries.forEach { entry ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(HelperDefaults.CompactCornerRadius))
+                            .clickable { onUseExisting(entry) },
+                        color = sourceCardFill(),
+                        border = BorderStroke(1.dp, sourceCardBorder())
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = entry.sourceName,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                entry.versionName?.let {
+                                    Text(
+                                        text = "· $it",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Text(
+                                text = entry.fileName,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDownloadNew) {
+                Text("Download new", fontWeight = FontWeight.SemiBold)
+            }
+        }
+    )
 }
 
 @Composable
