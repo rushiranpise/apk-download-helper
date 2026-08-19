@@ -2064,13 +2064,18 @@ private fun HelperScreen(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onBackground,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            // Yield space to the version label first: the version is
+                            // the last child, so without this it gets whatever the
+                            // title leaves and clips ("v1.") when the row is tight.
+                            modifier = Modifier.weight(1f, fill = false)
                         )
                         Text(
                             text = "v${BuildConfig.VERSION_NAME}",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.titleSmall,
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Clip
                         )
                     }
                     HelperBoltButton(
@@ -2105,14 +2110,13 @@ private fun HelperScreen(
                             ).show()
                         }
                     )
-                    HelperOutlinedButton(
-                        text = "Settings",
+                    HelperHeaderIconButton(
+                        icon = Icons.Outlined.Settings,
+                        contentDescription = "Settings",
                         onClick = {
                             refreshHistory()
                             showSettings = true
-                        },
-                        icon = Icons.Outlined.Settings,
-                        modifier = Modifier.widthIn(min = 120.dp)
+                        }
                     )
                 }
             }
@@ -2975,6 +2979,32 @@ private fun HelperBoltButton(
         Icon(
             imageVector = Icons.Outlined.Bolt,
             contentDescription = if (fastMode) "Fast Mode on" else "Fast Mode off",
+            modifier = Modifier.size(HelperDefaults.IconSizeSmall)
+        )
+    }
+}
+
+@Composable
+private fun HelperHeaderIconButton(
+    icon: ImageVector,
+    contentDescription: String?,
+    onClick: () -> Unit
+) {
+    val primary = MaterialTheme.colorScheme.primary
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.size(HelperDefaults.ButtonHeight),
+        shape = RoundedCornerShape(HelperDefaults.ButtonCornerRadius),
+        colors = ButtonDefaults.outlinedButtonColors(
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.9f)
+        ),
+        border = BorderStroke(1.dp, primary.copy(alpha = 0.32f)),
+        contentPadding = PaddingValues(0.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
             modifier = Modifier.size(HelperDefaults.IconSizeSmall)
         )
     }
