@@ -302,7 +302,7 @@ class MainActivity : ComponentActivity() {
     private var captchaBrowser by mutableStateOf<DownloadCandidate?>(null)
     // Set when a repeat request matches previous downloads that still exist;
     // the user picks one to reuse or chooses to download a fresh copy.
-    private var reuseOffer by mutableStateOf<List<DownloadHistoryEntry>?>(null)
+    private var reuseOffer by mutableStateOf<List<ReuseOption>?>(null)
     private var fastModeActive = false
     private var fastModeQueue: MutableList<DownloadSource>? = null
     private var fastModeDecision: CompletableDeferred<FastModeChoice?>? = null
@@ -381,7 +381,7 @@ class MainActivity : ComponentActivity() {
                 val offer = reuseOffer
                 if (offer != null) {
                     ReuseOfferDialog(
-                        entries = offer,
+                        options = offer,
                         onUseExisting = ::useReuseOffer,
                         // "Download new" (or dismissing) dismisses the offer and,
                         // when Fast Mode is on, starts it only now  never while
@@ -1427,8 +1427,11 @@ class MainActivity : ComponentActivity() {
                 history.packageName == request.packageName &&
                     request.matchesRequestedVersion(history.versionName, null)
             }
-            .distinctBy { it.uri }
+            // The same file may be recorded twice (cache copy + Downloads
+            // copy); show each distinct file once, newest record first.
+            .distinctBy { it.fileName }
             .filter { entry -> historyFileExists(entry) }
+            .map { entry -> ReuseOption(entry, historyFileSize(entry)) }
         if (existing.isNotEmpty()) reuseOffer = existing
     }
 
@@ -1443,10 +1446,22 @@ class MainActivity : ComponentActivity() {
         }.getOrDefault(false)
     }
 
+    private fun historyFileSize(entry: DownloadHistoryEntry): Long {
+        val uri = Uri.parse(entry.uri)
+        return runCatching {
+            if (entry.uri.startsWith("content://")) {
+                contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: 0L
+            } else {
+                File(uri.path ?: return@runCatching 0L).length()
+            }
+        }.getOrDefault(0L)
+    }
+
     /** Hand the selected offered file back to Morphe instead of downloading again. */
-    private fun useReuseOffer(entry: DownloadHistoryEntry) {
+    private fun useReuseOffer(option: ReuseOption) {
         reuseOffer = null
         val request = request ?: return
+        val entry = option.entry
         appendLog(
             "Reusing previously downloaded ${entry.fileName} for ${request.packageName} " +
                 "instead of re-downloading.",
@@ -3152,10 +3167,16 @@ private fun HelperBoltButton(
     }
 }
 
+/** A previously downloaded file offered for reuse, with its size on disk. */
+private data class ReuseOption(
+    val entry: DownloadHistoryEntry,
+    val sizeBytes: Long
+)
+
 @Composable
 private fun ReuseOfferDialog(
-    entries: List<DownloadHistoryEntry>,
-    onUseExisting: (DownloadHistoryEntry) -> Unit,
+    options: List<ReuseOption>,
+    onUseExisting: (ReuseOption) -> Unit,
     onDownloadNew: () -> Unit
 ) {
     AlertDialog(
@@ -3175,12 +3196,13 @@ private fun ReuseOfferDialog(
                     text = "A previous download for this exact version is still available. Pick one to return to Morphe without downloading again.",
                     style = MaterialTheme.typography.bodyMedium
                 )
-                entries.forEach { entry ->
+                options.forEach { option ->
+                    val entry = option.entry
                     Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(HelperDefaults.CompactCornerRadius))
-                            .clickable { onUseExisting(entry) },
+                            .clickable { onUseExisting(option) },
                         color = sourceCardFill(),
                         border = BorderStroke(1.dp, sourceCardBorder())
                     ) {
@@ -3202,6 +3224,13 @@ private fun ReuseOfferDialog(
                                 entry.versionName?.let {
                                     Text(
                                         text = "· $it",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                if (option.sizeBytes > 0L) {
+                                    Text(
+                                        text = "· ${option.sizeBytes.formatBytes()}",
                                         style = MaterialTheme.typography.labelLarge,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
