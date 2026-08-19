@@ -383,7 +383,13 @@ class MainActivity : ComponentActivity() {
                     ReuseOfferDialog(
                         entries = offer,
                         onUseExisting = ::useReuseOffer,
-                        onDownloadNew = { reuseOffer = null }
+                        // "Download new" (or dismissing) dismisses the offer and,
+                        // when Fast Mode is on, starts it only now  never while
+                        // the dialog is up, so it cannot download behind it.
+                        onDownloadNew = {
+                            reuseOffer = null
+                            request?.let(::startFastModeIfEnabled)
+                        }
                     )
                 }
             }
@@ -392,7 +398,7 @@ class MainActivity : ComponentActivity() {
         val activeRequest = request
         if (activeRequest != null) {
             loadCandidates()
-            startFastModeIfEnabled(activeRequest)
+            if (reuseOffer == null) startFastModeIfEnabled(activeRequest)
         }
     }
 
@@ -409,8 +415,9 @@ class MainActivity : ComponentActivity() {
         val activeRequest = request
         if (activeRequest != null) {
             if (!deliverPendingResultIfPresent(activeRequest)) {
+                offerExistingDownloadIfPresent(activeRequest)
                 loadCandidates()
-                startFastModeIfEnabled(activeRequest)
+                if (reuseOffer == null) startFastModeIfEnabled(activeRequest)
             }
         } else {
             uiState = UiState.Idle
