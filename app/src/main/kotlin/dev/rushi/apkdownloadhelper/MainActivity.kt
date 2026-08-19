@@ -2592,14 +2592,15 @@ private fun HelperSettingsScreen(
                 horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                HelperOutlinedButton(
-                    text = "Back",
-                    onClick = onBack,
+                HelperHeaderIconButton(
                     icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                    modifier = Modifier.widthIn(min = 112.dp)
+                    contentDescription = "Back",
+                    onClick = onBack
                 )
+                Spacer(Modifier.width(HelperDefaults.ButtonHeight))
                 Column(
                     modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
@@ -2614,6 +2615,7 @@ private fun HelperSettingsScreen(
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
+                Spacer(Modifier.width(HelperDefaults.ButtonHeight))
             }
         }
 
