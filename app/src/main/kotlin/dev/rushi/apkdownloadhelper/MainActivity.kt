@@ -3245,14 +3245,15 @@ private fun ReuseOfferDialog(
                         }
                     }
                 }
+                Spacer(Modifier.height(4.dp))
+                HelperButton(
+                    text = "Download new",
+                    onClick = onDownloadNew,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         },
-        confirmButton = {
-            HelperButton(
-                text = "Download new",
-                onClick = onDownloadNew
-            )
-        }
+        confirmButton = {}
     )
 }
 
