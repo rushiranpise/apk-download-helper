@@ -190,6 +190,7 @@ internal class DownloadService : Service() {
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
+        .dns(AdGuardDns)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
@@ -203,6 +204,7 @@ internal class DownloadService : Service() {
     private val apkPureClient = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
+        .dns(AdGuardDns)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()

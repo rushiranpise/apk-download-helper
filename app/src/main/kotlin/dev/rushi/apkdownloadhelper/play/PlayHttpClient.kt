@@ -29,6 +29,7 @@ class PlayHttpClient(cache: Cache) : IHttpClient {
         .retryOnConnectionFailure(true)
         .followRedirects(true)
         .followSslRedirects(true)
+        .dns(dev.rushi.apkdownloadhelper.AdGuardDns)
         .cache(cache)
         .addInterceptor(dev.rushi.apkdownloadhelper.httpLoggingInterceptor("Play"))
         .build()

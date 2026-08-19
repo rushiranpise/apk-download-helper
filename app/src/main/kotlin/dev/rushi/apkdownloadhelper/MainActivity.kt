@@ -22,6 +22,7 @@ import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -65,6 +66,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.CleaningServices
+import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DarkMode
@@ -227,6 +229,7 @@ class MainActivity : ComponentActivity() {
     private val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
+        .dns(AdGuardDns)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
@@ -239,6 +242,7 @@ class MainActivity : ComponentActivity() {
     private val apkPureClient = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
+        .dns(AdGuardDns)
         .addInterceptor { chain ->
             chain.proceed(
                 chain.request().newBuilder()
@@ -1832,6 +1836,26 @@ private fun CaptchaBrowserScreen(
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             addJavascriptInterface(bridge, CAPTCHA_BRIDGE_NAME)
             webViewClient = object : WebViewClient() {
+                override fun shouldInterceptRequest(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): WebResourceResponse? {
+                    // Apply AdGuard DNS filtering to the in-app browser: when the
+                    // setting is on, drop subresources whose host AdGuard filters
+                    // (ads/trackers answer 0.0.0.0). Any resolver failure means
+                    // "not blocked", so the page still loads.
+                    val host = request?.url?.host ?: return null
+                    if (AdGuardDns.isBlocked(host)) {
+                        Log.i(TAG, "AdGuard DNS: blocked ${request.url} in the in-app browser")
+                        return WebResourceResponse(
+                            "text/plain",
+                            "utf-8",
+                            ByteArrayInputStream(ByteArray(0))
+                        )
+                    }
+                    return null
+                }
+
                 override fun shouldOverrideUrlLoading(
                     view: WebView?,
                     request: WebResourceRequest?
@@ -2594,6 +2618,17 @@ private fun HelperSettingsCard(
                     }
                 )
             }
+            SettingSwitchRow(
+                icon = Icons.Outlined.Dns,
+                title = "AdGuard DNS",
+                description = "Resolve app traffic through AdGuard DNS (blocks ads and trackers on " +
+                    "download pages and in the in-app captcha browser). Falls back to the " +
+                    "system resolver whenever it fails.",
+                checked = settings.adGuardDns,
+                onCheckedChange = {
+                    onSettingsChange(settings.copy(adGuardDns = it))
+                }
+            )
         }
 
         SettingsGroupCard("Appearance") {

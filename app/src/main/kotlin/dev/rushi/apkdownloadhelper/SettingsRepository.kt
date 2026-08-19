@@ -18,6 +18,13 @@ internal const val TEMP_CLEANUP_MAX_AGE_MS = 6 * 60 * 60 * 1000L
 @Volatile
 internal var logcatLoggingEnabled = true
 
+/**
+ * Mirrors the user's AdGuard DNS preference so OkHttp clients (built before
+ * settings load) can route lookups per request without holding a Context.
+ */
+@Volatile
+internal var adGuardDnsEnabled = false
+
 internal data class HelperSettings(
     val downloadLocation: DownloadLocation = DownloadLocation.TEMPORARY,
     val networkPolicy: NetworkPolicy = NetworkPolicy.WIFI_AND_MOBILE,
@@ -26,7 +33,8 @@ internal data class HelperSettings(
     val fastMode: Boolean = false,
     val disabledSources: Set<DownloadSource> = emptySet(),
     val themeMode: ThemeMode = ThemeMode.DARK,
-    val dynamicColors: Boolean = true
+    val dynamicColors: Boolean = true,
+    val adGuardDns: Boolean = false
 )
 
 internal enum class ThemeMode(
@@ -127,14 +135,17 @@ internal fun Context.loadHelperSettings(): HelperSettings {
             prefs.getString("theme_mode", null),
             ThemeMode.DARK
         ),
-        dynamicColors = prefs.getBoolean("dynamic_colors", true)
+        dynamicColors = prefs.getBoolean("dynamic_colors", true),
+        adGuardDns = prefs.getBoolean("adguard_dns", false)
     )
     logcatLoggingEnabled = settings.logcatLogging
+    adGuardDnsEnabled = settings.adGuardDns
     return settings
 }
 
 internal fun Context.saveHelperSettings(settings: HelperSettings) {
     logcatLoggingEnabled = settings.logcatLogging
+    adGuardDnsEnabled = settings.adGuardDns
     getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString("download_location", settings.downloadLocation.name)
@@ -145,6 +156,7 @@ internal fun Context.saveHelperSettings(settings: HelperSettings) {
         .putStringSet("disabled_sources", settings.disabledSources.map { it.name }.toSet())
         .putString("theme_mode", settings.themeMode.name)
         .putBoolean("dynamic_colors", settings.dynamicColors)
+        .putBoolean("adguard_dns", settings.adGuardDns)
         .apply()
 }
 
