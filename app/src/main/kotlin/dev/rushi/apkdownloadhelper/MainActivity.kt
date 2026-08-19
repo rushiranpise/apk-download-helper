@@ -2587,19 +2587,11 @@ private fun HelperSettingsScreen(
         verticalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing)
     ) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(HelperDefaults.ItemSpacing),
-                verticalAlignment = Alignment.CenterVertically
+            Box(
+                modifier = Modifier.fillMaxWidth()
             ) {
-                HelperHeaderIconButton(
-                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                    contentDescription = "Back",
-                    onClick = onBack
-                )
-                Spacer(Modifier.width(HelperDefaults.ButtonHeight))
                 Column(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.align(Alignment.Center),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
@@ -2615,7 +2607,12 @@ private fun HelperSettingsScreen(
                         style = MaterialTheme.typography.bodySmall
                     )
                 }
-                Spacer(Modifier.width(HelperDefaults.ButtonHeight))
+                HelperHeaderIconButton(
+                    icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                    contentDescription = "Back",
+                    onClick = onBack,
+                    modifier = Modifier.align(Alignment.CenterStart)
+                )
             }
         }
 
@@ -3263,12 +3260,13 @@ private fun ReuseOfferDialog(
 private fun HelperHeaderIconButton(
     icon: ImageVector,
     contentDescription: String?,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val primary = MaterialTheme.colorScheme.primary
     OutlinedButton(
         onClick = onClick,
-        modifier = Modifier.size(HelperDefaults.ButtonHeight),
+        modifier = modifier.size(HelperDefaults.ButtonHeight),
         shape = RoundedCornerShape(HelperDefaults.ButtonCornerRadius),
         colors = ButtonDefaults.outlinedButtonColors(
             containerColor = Color.Transparent,
