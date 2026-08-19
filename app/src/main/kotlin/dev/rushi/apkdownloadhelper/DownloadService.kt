@@ -48,7 +48,7 @@ private const val CHANNEL_PROGRESS = "download_progress"
 private const val CHANNEL_DONE = "download_done"
 private const val NOTIFICATION_ID_PROGRESS = 1001
 internal const val NOTIFICATION_ID_DONE = 1002
-private const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
+internal const val TEMP_CLEANUP_DELAY_MS = 5 * 60 * 1000L
 private const val PREFS_PENDING = "pending_download_result"
 
 
@@ -646,10 +646,25 @@ internal class DownloadService : Service() {
     }
 }
 
-internal fun scheduleTemporaryDelete(file: File) {
+internal fun Context.scheduleTemporaryDelete(file: File) {
+    val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    // Record the deletion first so a process death between download and cleanup
+    // cannot leave the handed-off file behind: the startup cleanup re-runs any
+    // recorded deletion that the in-process thread never got to.
+    prefs.edit().putStringSet(
+        "pending_temp_deletes",
+        prefs.getStringSet("pending_temp_deletes", emptySet()).orEmpty() +
+            "${file.absolutePath}|${System.currentTimeMillis()}"
+    ).apply()
     Thread {
         Thread.sleep(TEMP_CLEANUP_DELAY_MS)
+        Log.i(TAG, "Cleaning up handed-off temp file: ${file.absolutePath}")
         runCatching { file.delete() }
+        val remaining = prefs.getStringSet("pending_temp_deletes", emptySet())
+            .orEmpty()
+            .filterNot { it.startsWith("${file.absolutePath}|") }
+            .toSet()
+        prefs.edit().putStringSet("pending_temp_deletes", remaining).apply()
     }.apply {
         name = "apk-helper-temp-cleanup"
         isDaemon = true

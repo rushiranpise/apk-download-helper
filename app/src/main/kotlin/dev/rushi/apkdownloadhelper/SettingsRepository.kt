@@ -9,7 +9,6 @@ import android.provider.MediaStore
 import java.io.File
 
 internal const val PREFS_NAME = "helper_settings"
-internal const val TEMP_CLEANUP_MAX_AGE_MS = 6 * 60 * 60 * 1000L
 
 /**
  * Mirrors the user's Logcat preference so long-lived clients (built before
@@ -245,11 +244,65 @@ internal fun Context.clearDownloadsCopies(): Long {
     return freed
 }
 
-internal fun Context.cleanupTemporaryDownloads(settings: HelperSettings) {
-    if (!settings.deleteTemporaryAfterHandoff) return
-    val cutoff = System.currentTimeMillis() - TEMP_CLEANUP_MAX_AGE_MS
+/**
+ * Cleans up handed-off and stale temporary files when auto-clear is enabled,
+ * returning the freed bytes (0 if nothing was removed).
+ *
+ * Two sources of leftovers are handled:
+ *  1. Handed-off files whose in-process deleter died with the process (they were
+ *     recorded in `pending_temp_deletes` at hand-off time).
+ *  2. Older handed-off files that predate that record: once past the same grace
+ *     period, anything in the temp dir is dropped unless it is the file the
+ *     pending hand-off result still points at (Morphe can re-request it) or an
+ *     in-progress download's `.part` staging file.
+ */
+internal fun Context.cleanupTemporaryDownloads(settings: HelperSettings): Long {
+    if (!settings.deleteTemporaryAfterHandoff) return 0L
+    var freed = 0L
+    val now = System.currentTimeMillis()
+    val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    val deleteCutoff = now - TEMP_CLEANUP_DELAY_MS
+
+    // The file the pending hand-off result still points at must survive.
+    val pendingFile = DownloadJobManager.readPendingResult(this)
+        ?.fileName
+        ?.let { name -> File(temporaryDownloadsDir(), name).canonicalPath }
+
+    // 1) Recorded handed-off deletions the in-process deleter never ran.
+    val pending = prefs.getStringSet("pending_temp_deletes", emptySet()).orEmpty()
+    if (pending.isNotEmpty()) {
+        val remaining = pending.toMutableSet()
+        pending.forEach { entry ->
+            val path = entry.substringBeforeLast('|')
+            val recordedAt = entry.substringAfterLast('|').toLongOrNull() ?: 0L
+            val file = File(path)
+            when {
+                !file.exists() -> remaining.remove(entry)
+                now - recordedAt >= TEMP_CLEANUP_DELAY_MS -> {
+                    freed += file.length()
+                    runCatching { file.delete() }
+                    remaining.remove(entry)
+                }
+            }
+        }
+        prefs.edit().putStringSet("pending_temp_deletes", remaining).apply()
+    }
+
+    // 2) Handed-off leftovers with no record: past the grace period, drop every
+    //    temp file that is not the pending re-request target or an in-flight
+    //    download's staging file.
     temporaryDownloadsDir()
         .listFiles()
-        ?.filter { it.isFile && it.lastModified() < cutoff }
-        ?.forEach { file -> runCatching { file.delete() } }
+        ?.filter {
+            it.isFile &&
+                it.lastModified() < deleteCutoff &&
+                it.name.endsWith(".part").not() &&
+                it.canonicalPath != pendingFile
+        }
+        ?.forEach { file ->
+            freed += file.length()
+            runCatching { file.delete() }
+        }
+
+    return freed
 }

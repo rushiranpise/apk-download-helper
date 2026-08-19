@@ -311,7 +311,16 @@ class MainActivity : ComponentActivity() {
         request = HelperRequest.from(intent)
         startRequestLog(request)
         lifecycleScope.launch(Dispatchers.IO) {
-            cleanupTemporaryDownloads(helperSettings)
+            val freed = cleanupTemporaryDownloads(helperSettings)
+            if (freed > 0L) {
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Cleared ${freed.formatBytes()} of old cache",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
         }
         lifecycleScope.launch {
             DownloadJobManager.events.collect(::handleDownloadEvent)
