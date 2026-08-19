@@ -3629,15 +3629,21 @@ private fun SourcePickerFlow(
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
+            // Two separate expand blocks: the "How it works" card and the source
+            // grid used to share one AnimatedExpand, and when the card toggled while
+            // the grid was already expanded, its content stayed at the container's
+            // top and the paragraph rendered over the grid (overlapping text).
+            // Keeping each in its own block means no block's content height changes
+            // mid-animation, so the layout can never go stale.
+            AnimatedExpand(visible = showHowItWorks) {
+                InfoCard(
+                    "Pick a source, then a version type. The helper finds the version, " +
+                        "downloads it, validates it against Morphe's request, and returns it. " +
+                        "If a source gates the file behind a captcha, tap \"Solve captcha in app\" " +
+                        " a real browser opens and any download it produces is captured back."
+                )
+            }
             AnimatedExpand(visible = sourcesExpanded) {
-                if (showHowItWorks) {
-                    InfoCard(
-                        "Pick a source, then a version type. The helper finds the version, " +
-                            "downloads it, validates it against Morphe's request, and returns it. " +
-                            "If a source gates the file behind a captcha, tap \"Solve captcha in app\" " +
-                            " a real browser opens and any download it produces is captured back."
-                    )
-                }
                 SourceGrid(
                     groups = groups,
                     selectedIndex = pagerState.currentPage,
